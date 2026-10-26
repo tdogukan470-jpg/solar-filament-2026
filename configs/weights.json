@@ -1,0 +1,55 @@
+{
+ "_note": "Checkpoints are attached to GitHub release v1.0; sha256 are of the submitted checkpoints.",
+ "files": [
+  {
+   "name": "Unet_efficientnet-b4_s1536_f0.pth",
+   "url": "https://github.com/tdogukan470-jpg/solar-filament-2026/releases/download/v1.0/Unet_efficientnet-b4_s1536_f0.pth",
+   "sha256": "5ce50260b350f7ebc88a404d6f4ec928b94a5699693c47631b4c827c1db0c2af"
+  },
+  {
+   "name": "Unet_efficientnet-b4_s1536_f1.pth",
+   "url": "https://github.com/tdogukan470-jpg/solar-filament-2026/releases/download/v1.0/Unet_efficientnet-b4_s1536_f1.pth",
+   "sha256": "82ac1fd59a5d2b28f3adcc6f1380d21998fe05af51d24c29ec737d5f87409b06"
+  },
+  {
+   "name": "Unet_efficientnet-b4_s1536_f2.pth",
+   "url": "https://github.com/tdogukan470-jpg/solar-filament-2026/releases/download/v1.0/Unet_efficientnet-b4_s1536_f2.pth",
+   "sha256": "962a3d8e32f11717c0d6956997f463e09cbb918b25d38ccb73a26c16b5c40a93"
+  },
+  {
+   "name": "Unet_efficientnet-b4_s1536_f3.pth",
+   "url": "https://github.com/tdogukan470-jpg/solar-filament-2026/releases/download/v1.0/Unet_efficientnet-b4_s1536_f3.pth",
+   "sha256": "f470ff2e37b5b564bf65c0137dfb5a895b7d7bf25a821d226bc2f55cf1ea4d1b"
+  },
+  {
+   "name": "Unet_efficientnet-b4_s1536_f4.pth",
+   "url": "https://github.com/tdogukan470-jpg/solar-filament-2026/releases/download/v1.0/Unet_efficientnet-b4_s1536_f4.pth",
+   "sha256": "76886faa10021d3c7e07b9f1358dcf28003c099d979a9e91ee6401b0a5e0ece8"
+  },
+  {
+   "name": "Unet_efficientnet-b4_s2048_f0.pth",
+   "url": "https://github.com/tdogukan470-jpg/solar-filament-2026/releases/download/v1.0/Unet_efficientnet-b4_s2048_f0.pth",
+   "sha256": "e85156176f813f56a7f0931784d1ad8719bdd5e81b1a9e74dc2383501f3884f0"
+  },
+  {
+   "name": "Unet_efficientnet-b4_s2048_f1.pth",
+   "url": "https://github.com/tdogukan470-jpg/solar-filament-2026/releases/download/v1.0/Unet_efficientnet-b4_s2048_f1.pth",
+   "sha256": "7e0712144bfc00473b49a93351ba3641559d2dea5058e7fc6324afc200c97229"
+  },
+  {
+   "name": "Unet_efficientnet-b4_s2048_f2.pth",
+   "url": "https://github.com/tdogukan470-jpg/solar-filament-2026/releases/download/v1.0/Unet_efficientnet-b4_s2048_f2.pth",
+   "sha256": "a4754829519942b9f9ea4b8e6006185781036f1fe7f2a7393ba27ef1d9688943"
+  },
+  {
+   "name": "Unet_efficientnet-b4_s2048_f3.pth",
+   "url": "https://github.com/tdogukan470-jpg/solar-filament-2026/releases/download/v1.0/Unet_efficientnet-b4_s2048_f3.pth",
+   "sha256": "553970f63c44b2cfff0bf844d9aa905d26d78a20bd6a4a9dd0225dc9a88864ed"
+  },
+  {
+   "name": "Unet_efficientnet-b4_s2048_f4.pth",
+   "url": "https://github.com/tdogukan470-jpg/solar-filament-2026/releases/download/v1.0/Unet_efficientnet-b4_s2048_f4.pth",
+   "sha256": "5989de4da6a2219feeb83328b70061fb635d0c285f513b0d4609c8bcf8179214"
+  }
+ ]
+}

@@ -1,0 +1,2 @@
+{"cfg": {"thr": 0.35, "close_px": 0, "min_cc": 40, "link_px": 14, "border_thr": 1.01,
+         "min_area": 300, "min_score": 0.8, "seed_thr": 1.01, "fill_holes": false}}

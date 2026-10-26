@@ -18,3 +18,9 @@ job.txt
 kaggle_log.txt
 __pycache__/
 *.pyc
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+weights/
+figures/
+submission.csv
