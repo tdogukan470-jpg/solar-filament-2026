@@ -3,7 +3,6 @@ data/
 work/
 checkpoints/
 kaggle_out/
-*.pth
 *.pt
 *.npz
 *.zip
@@ -21,6 +20,5 @@ __pycache__/
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
-weights/
 figures/
 submission.csv
