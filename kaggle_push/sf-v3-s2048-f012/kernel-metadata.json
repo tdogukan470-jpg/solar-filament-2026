@@ -1,0 +1,15 @@
+{
+ "id": "doukanturan/sf-v3-s2048-f012",
+ "title": "sf-v3-s2048-f012",
+ "code_file": "sf-v3-s2048-f012.ipynb",
+ "language": "python",
+ "kernel_type": "notebook",
+ "is_private": true,
+ "enable_gpu": true,
+ "enable_internet": true,
+ "competition_sources": [
+  "filament-segmentation-2026"
+ ],
+ "dataset_sources": [],
+ "kernel_sources": []
+}

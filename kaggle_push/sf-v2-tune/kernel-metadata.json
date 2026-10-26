@@ -1,0 +1,19 @@
+{
+ "id": "doukanturan/sf-v2-tune",
+ "title": "sf-v2-tune",
+ "code_file": "sf-v2-tune.ipynb",
+ "language": "python",
+ "kernel_type": "notebook",
+ "is_private": true,
+ "enable_gpu": false,
+ "enable_internet": true,
+ "competition_sources": [
+  "filament-segmentation-2026"
+ ],
+ "dataset_sources": [],
+ "kernel_sources": [
+  "doukanturan/sf-v2-f0",
+  "doukanturan/sf-v2-f12",
+  "doukanturan/sf-v2-f34"
+ ]
+}

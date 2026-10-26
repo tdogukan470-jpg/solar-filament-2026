@@ -1,0 +1,15 @@
+{
+ "id": "doukanturan/sf-v6-upp-f4",
+ "title": "sf-v6-upp-f4",
+ "code_file": "sf-v6-upp-f4.ipynb",
+ "language": "python",
+ "kernel_type": "notebook",
+ "is_private": true,
+ "enable_gpu": true,
+ "enable_internet": true,
+ "competition_sources": [
+  "filament-segmentation-2026"
+ ],
+ "dataset_sources": [],
+ "kernel_sources": []
+}

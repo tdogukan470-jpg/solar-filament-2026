@@ -1,0 +1,15 @@
+{
+ "id": "doukanturan/sf-v4-annot-f0",
+ "title": "sf-v4-annot-f0",
+ "code_file": "sf-v4-annot-f0.ipynb",
+ "language": "python",
+ "kernel_type": "notebook",
+ "is_private": true,
+ "enable_gpu": true,
+ "enable_internet": true,
+ "competition_sources": [
+  "filament-segmentation-2026"
+ ],
+ "dataset_sources": [],
+ "kernel_sources": []
+}

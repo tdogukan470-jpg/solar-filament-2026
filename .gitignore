@@ -1,0 +1,20 @@
+# data, weights, outputs — never commit
+data/
+work/
+checkpoints/
+kaggle_out/
+*.pth
+*.pt
+*.npz
+*.zip
+*.tgz
+submission*.csv
+# credentials
+kaggle.json
+.kaggle/
+.env
+# local bridge logs
+job.txt
+kaggle_log.txt
+__pycache__/
+*.pyc
