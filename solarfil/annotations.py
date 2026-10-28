@@ -27,6 +27,8 @@ class Photo:
     file_name: str
     # annotator image id -> list of polygons (flat [x0, y0, x1, y1, ...])
     annotators: dict = field(default_factory=dict)
+    # annotator image id -> MAGFiLO chirality class of each polygon (1 Left, 2 Right, 3 Unidentifiable, 4 Ambiguous)
+    categories: dict = field(default_factory=dict)
 
 
 def load_photos(json_path: str) -> dict[str, Photo]:
@@ -39,12 +41,15 @@ def load_photos(json_path: str) -> dict[str, Photo]:
     for im in coco["images"]:
         stem = os.path.splitext(im["file_name"])[0]
         p = photos.setdefault(stem, Photo(stem=stem, file_name=im["file_name"]))
-        polys = []
+        polys, cats = [], []
         for a in anns.get(im["id"], []):
             seg = a["segmentation"]
             if isinstance(seg, list):
-                polys.extend([s for s in seg if len(s) >= 6])
+                keep = [s for s in seg if len(s) >= 6]
+                polys.extend(keep)
+                cats.extend([a.get("category_id", 0)] * len(keep))
         p.annotators[im["id"]] = polys
+        p.categories[im["id"]] = cats
     return photos
 
 
@@ -53,13 +58,19 @@ def poly_to_rle(poly: list, h: int = NATIVE, w: int = NATIVE) -> dict:
     return mask_util.merge(rles)
 
 
-def photo_gt_rles(photo: Photo) -> dict[str, list[dict]]:
-    """annotator id -> list of COCO RLE dicts (one per filament), exactly like annToMask."""
-    return {aid: [poly_to_rle(p) for p in polys] for aid, polys in photo.annotators.items()}
+def photo_gt_rles(photo: Photo, classes=None) -> dict[str, list[dict]]:
+    """annotator id -> list of COCO RLE dicts (one per filament), exactly like annToMask.
+    classes: optional set of MAGFiLO classes to keep (1 Left, 2 Right, 3 Unidentifiable, 4 Ambiguous)."""
+    if classes is None:
+        return {aid: [poly_to_rle(p) for p in polys] for aid, polys in photo.annotators.items()}
+    return {aid: [poly_to_rle(p) for p, c in zip(polys, photo.categories[aid]) if c in classes]
+            for aid, polys in photo.annotators.items()}
 
 
-def soft_targets(photo: Photo, size: int, border_px: int = 5) -> tuple[np.ndarray, np.ndarray]:
+def soft_targets(photo: Photo, size: int, border_px: int = 5, classes=None) -> tuple[np.ndarray, np.ndarray]:
     """Soft foreground and instance-border targets at (size, size), averaged over annotators.
+    classes: optional set of MAGFiLO classes that count as foreground (others are background); annotator copies
+    without any such filament do not exist in the matching ground-truth table and are not averaged in.
 
     foreground: fraction of annotators (and of the downsampled pixel area) covered by a filament.
     border    : pixels where dilated masks of two different filaments of the same annotator meet.
@@ -68,8 +79,10 @@ def soft_targets(photo: Photo, size: int, border_px: int = 5) -> tuple[np.ndarra
     fg = np.zeros((size, size), np.float32)
     bd = np.zeros((size, size), np.float32)
     k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * border_px + 1, 2 * border_px + 1))
-    n_ann = max(len(photo.annotators), 1)
-    for polys in photo.annotators.values():
+    copies = [polys if classes is None else [p for p, c in zip(polys, photo.categories[aid]) if c in classes]
+              for aid, polys in photo.annotators.items()]
+    n_ann = max(len(photo.annotators) if classes is None else sum(bool(c) for c in copies), 1)
+    for polys in copies:
         union = np.zeros((NATIVE, NATIVE), np.uint8)
         count = np.zeros((NATIVE, NATIVE), np.uint8)
         for p in polys:
@@ -95,3 +108,19 @@ def gt_frame(photos: dict[str, Photo], stems: list[str] | None = None):
                 rle = poly_to_rle(p)
                 rows.append({"filament_id": f"{aid}_{i}", "segmentation_rle": rle["counts"].decode()})
     return pd.DataFrame(rows)
+
+
+def main(argv=None):
+    import argparse
+    a = argparse.ArgumentParser(description="Write the training ground truth in the submission format "
+                                            "(one row per annotated filament, ids '<annotator>-<photo>_<k>').")
+    a.add_argument("--data_root", required=True)
+    a.add_argument("--out", required=True)
+    args = a.parse_args(argv)
+    df = gt_frame(load_photos(os.path.join(args.data_root, "train", "MAGFiLO_1.0_Annotations_kaggle2026_train.json")))
+    df.to_csv(args.out, index=False)
+    print(f"wrote {args.out}: {len(df)} ground-truth filaments")
+
+
+if __name__ == "__main__":
+    main()

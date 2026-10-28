@@ -29,13 +29,13 @@ def make_folds(stems: list[str], n_folds: int = 5, seed: int = 42) -> pd.DataFra
 
 # ----------------------------------------------------------------------------- cache
 def _cache_one(args):
-    photo, img_path, cache_dir, size, border_px = args
+    photo, img_path, cache_dir, size, border_px, classes = args
     xp = os.path.join(cache_dir, f"{photo.stem}_x.npy")
     yp = os.path.join(cache_dir, f"{photo.stem}_y.npy")
     if os.path.exists(xp) and os.path.exists(yp):
         return photo.stem
     x = load_input(img_path, size)
-    fg, bd = soft_targets(photo, size, border_px=border_px)
+    fg, bd = soft_targets(photo, size, border_px=border_px, classes=classes)
     y = np.dstack([np.round(fg * 255), np.round(bd * 255)]).astype(np.uint8)
     np.save(xp, x)
     np.save(yp, y)
@@ -43,9 +43,9 @@ def _cache_one(args):
 
 
 def build_cache(photos: dict[str, Photo], img_dir: str, cache_dir: str, size: int,
-                border_px: int = 5, workers: int = 4):
+                border_px: int = 5, workers: int = 4, classes=None):
     os.makedirs(cache_dir, exist_ok=True)
-    jobs = [(p, os.path.join(img_dir, p.file_name), cache_dir, size, border_px) for p in photos.values()]
+    jobs = [(p, os.path.join(img_dir, p.file_name), cache_dir, size, border_px, classes) for p in photos.values()]
     if workers <= 1:
         for j in jobs:
             _cache_one(j)

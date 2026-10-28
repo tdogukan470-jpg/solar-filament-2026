@@ -140,6 +140,76 @@ def _features(m, sl, pv, bv, n_obj):
             float(np.hypot(cy - 1024, cx - 1024) / 1024), n_obj]
 
 
+FEATURES_EXT = FEATURES + [
+    "skel_len", "width", "solidity", "cos2t", "sin2t", "radial_cos", "cx", "cy", "ring_p", "contrast",
+    "n_near150", "d_nearest", "rank_mean", "ph_ncand", "ph_fgmean", "ph_fgfrac", "ph_p99", "ph_area_cand",
+    "frac_p80",
+]
+
+
+def candidate_features(fg: np.ndarray, masks: list[np.ndarray], base_feats: list) -> np.ndarray:
+    """Per-candidate descriptors used by the learned re-scorer (rescore.py): the 17 `FEATURES` plus
+    shape (skeleton length, mean width, solidity, orientation), position, contrast against a 12 px ring
+    and context (neighbours, rank of the instance's confidence, photo-level activity).
+    fg: foreground probability at 2048^2; masks/base_feats come from instances(..., want_feats=True)."""
+    from skimage.morphology import skeletonize
+
+    n = len(masks)
+    if n == 0:
+        return np.zeros((0, len(FEATURES_EXT)), np.float32)
+    cents = np.array([np.argwhere(m).mean(0) for m in masks])           # (y, x)
+    mean_p = np.array([b[1] for b in base_feats])
+    rank = (-mean_p).argsort().argsort() / max(n - 1, 1)
+    areas = np.array([np.exp(b[0]) for b in base_feats])
+    ph = [int((areas >= 300).sum()), float(fg.mean()), float((fg > 0.35).mean()),
+          float(np.percentile(fg[::4, ::4], 99.5)), float(areas[areas >= 300].sum())]
+    ring_k = _disk(12)
+    out = []
+    for i, (m, b) in enumerate(zip(masks, base_feats)):
+        ys, xs = np.nonzero(m)
+        y0, y1 = max(ys.min() - 14, 0), min(ys.max() + 15, NATIVE)
+        x0, x1 = max(xs.min() - 14, 0), min(xs.max() + 15, NATIVE)
+        mm = m[y0:y1, x0:x1].astype(np.uint8)
+        fgc = fg[y0:y1, x0:x1]
+        skel_len = float(skeletonize(mm > 0).sum())
+        area = float(mm.sum())
+        cnts, _ = cv2.findContours(mm, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        hull = max(sum(cv2.contourArea(cv2.convexHull(c)) for c in cnts), 1.0)
+        cov = np.cov(np.vstack([ys, xs])) if len(ys) > 2 else np.eye(2)
+        _, evec = np.linalg.eigh(cov)
+        v = evec[:, -1]                                                   # principal direction (dy, dx)
+        th = np.arctan2(v[0], v[1])
+        cy, cx = cents[i]
+        ry, rx = cy - NATIVE / 2, cx - NATIVE / 2
+        radial = abs((v[0] * ry + v[1] * rx) / (np.hypot(ry, rx) + 1e-6))
+        ring = (cv2.dilate(mm, ring_k) > 0) & (mm == 0)
+        ring_p = float(fgc[ring].mean()) if ring.any() else 0.0
+        if n > 1:
+            d = np.hypot(cents[:, 0] - cy, cents[:, 1] - cx)
+            d[i] = 1e9
+            near, nearest = int((d < 150).sum()), float(min(d.min(), 2000))
+        else:
+            near, nearest = 0, 2000.0
+        out.append(list(b) + [skel_len, area / max(skel_len, 1.0), area / hull, np.cos(2 * th), np.sin(2 * th),
+                              radial, cx / NATIVE, cy / NATIVE, ring_p, b[1] - ring_p, near, nearest, rank[i],
+                              *ph, float((fgc[mm > 0] > 0.8).mean())])
+    return np.asarray(out, np.float32)
+
+
+def mask_features(fg: np.ndarray, bd: np.ndarray | None, masks: list[np.ndarray]) -> np.ndarray:
+    """FEATURES_EXT of arbitrary instance masks (e.g. the refined masks of stage 2), computed exactly like those of the
+    candidates found by `instances` so that the learned re-scorer can be applied to them."""
+    fg = upsample(fg)
+    bd = upsample(bd) if bd is not None else None
+    feats = []
+    for m in masks:
+        ys, xs = np.nonzero(m)
+        sl = (slice(int(ys.min()), int(ys.max()) + 1), slice(int(xs.min()), int(xs.max()) + 1))
+        mm = m[sl] > 0
+        feats.append(_features(mm, sl, fg[sl][mm], bd[sl][mm] if bd is not None else None, len(masks)))
+    return candidate_features(fg, masks, feats)
+
+
 def load_avg(paths: list[str]) -> np.ndarray:
     """Average uint8 probability npz files (2,S,S) of possibly different resolutions."""
     ps = [np.load(f)["p"].astype(np.float32) / 255.0 for f in paths]
@@ -153,11 +223,12 @@ def encode(masks: list[np.ndarray]) -> list[str]:
 
 
 def instances_rle(fg, border, cfg: PostCfg, rescorer=None) -> list[str]:
-    """rescorer: optional dict {"model": fitted regressor, "thr": float} (see rescore.py)."""
+    """rescorer: optional dict {"model": fitted regressor, "thr": float} (see rescore.py). With a rescorer, `cfg` is the
+    permissive candidate configuration and the learned score replaces the hand-tuned min_area / min_score rule."""
     if rescorer is None:
         return encode(instances(fg, border, cfg))
     masks, feats = instances(fg, border, cfg, want_feats=True)
     if not masks:
         return []
-    s = rescorer["model"].predict(np.asarray(feats, np.float32))
+    s = rescorer["model"].predict(candidate_features(upsample(fg), masks, feats))
     return encode([m for m, v in zip(masks, s) if v >= rescorer["thr"]])

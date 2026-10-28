@@ -45,6 +45,9 @@ def get_args(argv=None):
     a.add_argument("--ema", type=float, default=0.998)
     a.add_argument("--cache_root", default="", help="where to put the image cache (default: --work)")
     a.add_argument("--seed", type=int, default=42)
+    a.add_argument("--classes", type=int, nargs="+", default=[1, 2, 3, 4],
+                   help="MAGFiLO classes used as foreground (1 Left, 2 Right, 3 Unidentifiable, 4 Ambiguous)")
+    a.add_argument("--init_ckpt", default="", help="start from the EMA weights of this checkpoint (fine-tuning)")
     return a.parse_args(argv)
 
 
@@ -67,15 +70,17 @@ def main(argv=None):
     photos = {k: v for k, v in photos.items() if os.path.exists(os.path.join(img_dir, v.file_name))}
     if args.limit:
         photos = dict(list(photos.items())[: args.limit])
-    cache_dir = os.path.join(args.cache_root or args.work, f"cache_{args.size}")
-    print(f"photos={len(photos)} device={dev} cache={cache_dir}", flush=True)
-    build_cache(photos, img_dir, cache_dir, args.size, workers=args.workers)
+    classes = None if set(args.classes) == {1, 2, 3, 4} else set(args.classes)
+    suffix = "" if classes is None else "_c" + "".join(map(str, sorted(classes)))
+    cache_dir = os.path.join(args.cache_root or args.work, f"cache_{args.size}{suffix}")
+    print(f"photos={len(photos)} device={dev} cache={cache_dir} classes={sorted(classes or {1, 2, 3, 4})}", flush=True)
+    build_cache(photos, img_dir, cache_dir, args.size, workers=args.workers, classes=classes)
 
     folds = make_folds(list(photos), args.n_folds, args.seed)
     folds.to_csv(os.path.join(args.work, "folds.csv"), index=False)
     tr = folds.loc[folds.fold != args.fold, "stem"].tolist()
     va = folds.loc[folds.fold == args.fold, "stem"].tolist()
-    gts = {s: photo_gt_rles(photos[s]) for s in va}
+    gts = {s: photo_gt_rles(photos[s], classes) for s in va}
     print(f"fold {args.fold}: train={len(tr)} val={len(va)}", flush=True)
 
     spe = args.samples_per_epoch or 3 * len(tr)
@@ -84,6 +89,9 @@ def main(argv=None):
                     pin_memory=dev.type == "cuda", persistent_workers=args.workers > 0)
 
     model = FilamentNet(args.arch, args.encoder, None if args.weights == "none" else args.weights).to(dev)
+    if args.init_ckpt:
+        model.load_state_dict(torch.load(args.init_ckpt, map_location=dev, weights_only=False)["state_dict"])
+        print("initialised from", args.init_ckpt, flush=True)
     ema = EMA(model, decay=args.ema)
     crit = FilamentLoss(border_weight=args.border_weight)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wd)
@@ -93,7 +101,7 @@ def main(argv=None):
         opt, lambda s: (s + 1) / warm if s < warm else 0.5 * (1 + math.cos(math.pi * (s - warm) / max(1, steps - warm))) * 0.98 + 0.02)
     scaler = torch.amp.GradScaler("cuda", enabled=dev.type == "cuda")
 
-    tag = f"{args.arch}_{args.encoder}_s{args.size}_f{args.fold}"
+    tag = f"{args.arch}_{args.encoder}_s{args.size}{suffix}_f{args.fold}"
     ckpt = os.path.join(args.work, f"{tag}.pth")
     best, log = -1.0, []
     cfg = PostCfg()
@@ -129,7 +137,7 @@ def main(argv=None):
     sd = torch.load(ckpt, map_location=dev)["state_dict"]
     model.load_state_dict(sd)
     model.eval()
-    oof_dir = os.path.join(args.work, f"oof_{args.arch}_{args.encoder}_s{args.size}")
+    oof_dir = os.path.join(args.work, f"oof_{args.arch}_{args.encoder}_s{args.size}{suffix}")
     os.makedirs(oof_dir, exist_ok=True)
     for s in va:
         p = predict_full(model, load_full(s, cache_dir), tta=8).numpy()

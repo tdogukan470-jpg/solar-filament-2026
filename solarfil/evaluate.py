@@ -43,22 +43,28 @@ def evaluate(gt_df: pd.DataFrame, pred_df: pd.DataFrame, thr: float = 0.5) -> di
     stems = sorted(g)                                   # images without ground truth are ignored
     tp_iou, tp_dice, fp, fn = [], [], 0, 0
     all_iou, all_dice, gt_deg, pred_deg, img_dice = [], [], [], [], []
+    records = []                                        # per annotator copy: (photo, IoU sum, TP, FP, FN, semantic Dice)
     for s in stems:
-        iou, dice = overlap_matrices(g[s], p.get(s, []))
+        # ground-truth rows of the official format are keyed "<annotator>-<photo>": every annotator copy is scored
+        # separately against the prediction of the photo (see metric.py)
+        iou, dice = overlap_matrices(g[s], p.get(s.split("-", 1)[-1], []))
         n_gt, n_pred = iou.shape
         hit = iou > thr
         tp_iou += iou[hit].tolist(); tp_dice += dice[hit].tolist()
-        fp += int((hit.sum(0) == 0).sum()) if n_gt else n_pred
-        fn += int((hit.sum(1) == 0).sum()) if n_pred else n_gt
+        c_fp = int((hit.sum(0) == 0).sum()) if n_gt else n_pred
+        c_fn = int((hit.sum(1) == 0).sum()) if n_pred else n_gt
+        fp += c_fp; fn += c_fn
         all_iou += iou[iou > 0].tolist(); all_dice += dice[dice > 0].tolist()
         gt_deg += (iou > 0).sum(1).tolist() if n_pred else [0] * n_gt
         pred_deg += (iou > 0).sum(0).tolist() if n_gt else [0] * n_pred
-        if g[s] and p.get(s):                           # semantic Dice of the union masks of the image
-            ug, up = mask_util.merge(g[s]), mask_util.merge(p[s])
+        pr = p.get(s.split("-", 1)[-1], [])
+        if g[s] and pr:                                 # semantic Dice of the union masks of the image
+            ug, up = mask_util.merge(g[s]), mask_util.merge(pr)
             i = mask_util.area(mask_util.merge([ug, up], intersect=True))
             img_dice.append(2.0 * i / max(mask_util.area(ug) + mask_util.area(up), 1))
         else:
             img_dice.append(0.0)
+        records.append((s.split("-", 1)[-1], float(iou[hit].sum()), int(hit.sum()), c_fp, c_fn, img_dice[-1]))
     tp = len(tp_iou)
     den = tp + 0.5 * fp + 0.5 * fn
     return {
@@ -69,8 +75,28 @@ def evaluate(gt_df: pd.DataFrame, pred_df: pd.DataFrame, thr: float = 0.5) -> di
         "mean_iou_overlapping_pairs": float(np.mean(all_iou)) if all_iou else 0.0,
         "gt_split_into_n_predictions": dict(sorted(Counter(gt_deg).items())),      # one-to-many (fragmentation)
         "pred_covering_n_gt": dict(sorted(Counter(pred_deg).items())),             # many-to-one (over-merging)
-        "_iou": all_iou, "_dice": all_dice,
+        "_iou": all_iou, "_dice": all_dice, "_records": records,
     }
+
+
+def bootstrap(res: dict, n_boot: int = 1000, seed: int = 0, group_chars: int = 8) -> dict:
+    """Percentile 95 % intervals of PQ / SQ / DQ / mean semantic Dice by resampling observation days.
+
+    Photos of the same day (the first `group_chars` characters of the photo id are the date) are strongly correlated,
+    so the days, not the photos, are the resampling unit.  `res` is the output of `evaluate`."""
+    rec = res["_records"]
+    days = sorted({r[0][:group_chars] for r in rec})
+    idx = {d: [i for i, r in enumerate(rec) if r[0][:group_chars] == d] for d in days}
+    a = np.array([[r[1], r[2], r[3], r[4], r[5], 1.0] for r in rec])           # iou_sum, tp, fp, fn, dice, count
+    per_day = np.stack([a[idx[d]].sum(0) for d in days])
+    rng = np.random.default_rng(seed)
+    out = {"PQ": [], "SQ": [], "DQ": [], "mean_dice_semantic": []}
+    for _ in range(n_boot):
+        s = per_day[rng.integers(0, len(days), len(days))].sum(0)
+        den = s[1] + 0.5 * s[2] + 0.5 * s[3]
+        out["PQ"].append(s[0] / den); out["SQ"].append(s[0] / max(s[1], 1)); out["DQ"].append(s[1] / den)
+        out["mean_dice_semantic"].append(s[4] / s[5])
+    return {k: (float(np.mean(v)), float(np.percentile(v, 2.5)), float(np.percentile(v, 97.5))) for k, v in out.items()}
 
 
 def plots(res: dict, out_dir: str):
@@ -93,10 +119,14 @@ def plots(res: dict, out_dir: str):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--gt", required=True); ap.add_argument("--pred", required=True); ap.add_argument("--plots", default="")
+    ap.add_argument("--bootstrap", type=int, default=0, help="number of day-level bootstrap resamples for 95 %% intervals")
     a = ap.parse_args(argv)
     res = evaluate(pd.read_csv(a.gt), pd.read_csv(a.pred))
     for k, v in res.items():
         if not k.startswith("_"): print(f"{k}: {v:.4f}" if isinstance(v, float) else f"{k}: {v}")
+    if a.bootstrap:
+        for k, (m, lo, hi) in bootstrap(res, a.bootstrap).items():
+            print(f"{k}: {m:.4f}  95% interval [{lo:.4f}, {hi:.4f}]  (bootstrap over days)")
     if a.plots: plots(res, a.plots)
 
 

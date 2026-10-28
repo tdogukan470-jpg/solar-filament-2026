@@ -1,24 +1,23 @@
-# data, weights, outputs — never commit
+# data and outputs - never commit (the 10 final checkpoints in weights/*.pth are tracked on purpose, see README)
 data/
 work/
 checkpoints/
 kaggle_out/
 *.pt
 *.npz
+!configs/rescorer_all.npz
 *.zip
 *.tgz
 submission*.csv
+figures/
 # credentials
 kaggle.json
 .kaggle/
 .env
-# local bridge logs
+# local logs and caches
 job.txt
 kaggle_log.txt
 __pycache__/
 *.pyc
-__pycache__/
-*.pyc
 .ipynb_checkpoints/
-figures/
-submission.csv
+.pytest_cache/
