@@ -77,7 +77,7 @@ intervals that resample observation days (photographs of one day are near-duplic
 | One-to-many / many-to-one relations | same command; 82.6 % of the predictions overlap exactly one annotation, 3.4 % two or more |
 | Pipeline description (pre-processing to final prediction, architecture) | "Method" below, `pipeline.ipynb`, the 4-page report |
 | Apparent morphology of the predicted segmentations | `docs/examples_*.jpg`, `docs/pipeline_demo.jpg`, `python -m solarfil.morphology` (area, skeleton length, width, orientation of annotations vs. predictions) |
-| Code quality (modularity, documentation) | one module per stage (table below), a docstring and a command line per module, `tests/` (27 unit tests) |
+| Code quality (modularity, documentation) | one module per stage (table below), a docstring and a command line per module, `tests/` (28 unit tests) |
 | Computational cost | about one GPU hour (T4 / P100) for the 180 test photographs, i.e. 20 s per photograph, almost all of it in the 80 network passes (10 networks x 8 transforms); the filter and the post-processing run on the CPU |
 
 ### Examples
@@ -214,6 +214,7 @@ python -m solarfil.analysis hand       --data_root $DATA --cands work/cands_oof.
 python -m solarfil.analysis radius     --data_root $DATA --cands work/cands_oof.pkl                 # mask thickness: pooled and per annotator (~15 min)
 python -m solarfil.analysis pairs      --data_root $DATA --cands work/cands_oof.pkl                 # matched prediction-annotation pairs (~5 min)
 python -m solarfil.analysis extent     --data_root $DATA --cands work/cands_oof.pkl                 # errors of extent: small annotations vs. long ones (~1 min)
+python -m solarfil.analysis geometry   --data_root $DATA --cands work/cands_oof.pkl                 # PQ after a 3x3 square / cross kernel grows or shrinks every mask: OOF counterpart of the leaderboard geometry probes (~17 min)
 python -m solarfil.cands --probs work/probs --rescorer configs/rescorer_all.npz --out work/cands_test.pkl   # candidates + scores of the test photographs
 python -m solarfil.analysis shift      --cands work/cands_oof.pkl --test_cands work/cands_test.pkl  # candidates per photograph / share kept / score quantiles: OOF vs. test
 python -m solarfil.morphology --gt gt_train.csv --pred work/pred_oof.csv --out figures/morphology.png   # apparent morphology: annotations vs predictions

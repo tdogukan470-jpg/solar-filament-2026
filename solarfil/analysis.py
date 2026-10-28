@@ -19,6 +19,10 @@ them against every annotator copy exactly like the official metric (IoU > 0.5, p
     python -m solarfil.analysis radius --data_root D --cands cands_oof.pkl [--workers 2]
         PQ after growing / shrinking every selected mask by r = -2 ... +2 pixels, pooled and per annotator, with the
         PQ-optimal (fractional) radius of every annotator: annotators differ in how thick they draw
+    python -m solarfil.analysis geometry --data_root D --cands cands_oof.pkl [--workers 2]
+        PQ after one iteration of a 3x3 square / cross kernel that grows (disjoint masks) or shrinks every selected mask:
+        the out-of-fold counterpart of the leaderboard geometry probes (a test-set annotator mix that differs from the
+        training mix in how thick the masks are drawn would show up as a different effect on the leaderboard)
     python -m solarfil.analysis pairs  --data_root D --cands cands_oof.pkl [--workers 2]
         area / skeleton length / width of matched prediction-annotation pairs (IoU > 0.5)
     python -m solarfil.analysis extent --data_root D --cands cands_oof.pkl
@@ -52,6 +56,8 @@ from .evaluate import bootstrap, evaluate
 
 SIZE = [2048, 2048]
 RADII = (-2, -1, 0, 1, 2)
+GEOMETRY = ("base", "dil_sq", "ero_sq", "dil_x", "ero_x")
+KERNELS = {"sq": np.ones((3, 3), np.uint8), "x": cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))}   # square / cross
 _G: dict = {}
 
 
@@ -309,6 +315,54 @@ def radius(cands, photos, stems, tau, workers, n_boot=1000):
           f"interval excludes 0 for {sum(1 for o in out if o[4] > 0 or o[5] < 0)}")
 
 
+# ------------------------------------------------------------------------------------------------ geometry
+def geometry_op(masks: list[np.ndarray], op: str) -> list[np.ndarray]:
+    """One iteration of a 3x3 kernel on every mask of a photograph: `dil_sq` / `dil_x` grow (a pixel claimed by several
+    grown masks stays with the mask that owned it, so the masks stay disjoint), `ero_sq` / `ero_x` shrink; `base` is the
+    identity. Masks that vanish are dropped. These are the operations of the leaderboard geometry probes."""
+    if op == "base":
+        return list(masks)
+    kind, k = op.split("_")
+    if kind == "ero":
+        out = [cv2.erode(m, KERNELS[k]) for m in masks]
+    else:
+        grown = [cv2.dilate(m, KERNELS[k]) for m in masks]
+        n = np.sum(grown, axis=0)
+        out = [(g & ((n == 1) | m.astype(bool))).astype(np.uint8) for g, m in zip(grown, masks)]
+    return [m for m in out if m.any()]
+
+
+def _geometry_job(stem):
+    base = [mask_util.decode(r) for r in _G["sel"][stem]]
+    out = {}
+    for op in GEOMETRY:
+        enc = [mask_util.encode(np.asfortranarray(m)) for m in geometry_op(base, op)]
+        tot = np.zeros(4)
+        for g in _G["gts"][stem].values():
+            if g:
+                tot += stats([iou_matrix(enc, g)], np.ones(len(enc), bool))
+        out[op] = tot
+    return stem, out
+
+
+def geometry(cands, photos, stems, tau, workers):
+    gts = {s: photo_gt_rles(photos[s]) for s in stems}
+    sel = {s: selected(cands, s, tau) for s in stems}
+    tot, t0 = {op: np.zeros(4) for op in GEOMETRY}, time.time()
+    with ProcessPoolExecutor(workers, initializer=_init, initargs=({"gts": gts, "sel": sel},)) as ex:
+        for k, (_, o) in enumerate(ex.map(_geometry_job, stems, chunksize=4)):
+            for op in GEOMETRY:
+                tot[op] += o[op]
+            if k % 100 == 0:
+                print(k, len(stems), f"{time.time() - t0:.0f}s", flush=True)
+    base = _pq3(tot["base"])[0]
+    print("\nPQ after one iteration of a 3x3 kernel (sq = square, x = cross) on every selected mask:")
+    for op in GEOMETRY:
+        p, sq, dq = _pq3(tot[op])
+        print(f"{op:7s} PQ {p:.4f} (x{p / base:.3f}, {p - base:+.4f})  SQ {sq:.4f} DQ {dq:.4f}  "
+              f"TP {int(tot[op][1])} FP {int(tot[op][2])} FN {int(tot[op][3])}")
+
+
 # ------------------------------------------------------------------------------------------------ pairs
 def _pairs_job(stem):
     from .morphology import describe
@@ -384,7 +438,7 @@ def main(argv=None):
     p.add_argument("--cands", required=True, help="out-of-fold candidate file (python -m solarfil.cands)")
     p.add_argument("--test_cands", required=True, help="candidate file of the test photographs (python -m solarfil.cands --probs ...)")
     p.add_argument("--tau", type=float, default=0.20)
-    for name in ("numbers", "annotators", "tau", "hand", "radius", "pairs", "extent"):
+    for name in ("numbers", "annotators", "tau", "hand", "radius", "pairs", "extent", "geometry"):
         p = sub.add_parser(name)
         p.add_argument("--data_root", required=True)
         p.add_argument("--cands", required=name != "annotators", default="",
@@ -413,6 +467,8 @@ def main(argv=None):
         radius(cands, photos, stems, args.tau, args.workers)
     elif args.cmd == "extent":
         extent(cands, photos, stems, args.tau)
+    elif args.cmd == "geometry":
+        geometry(cands, photos, stems, args.tau, args.workers)
     else:
         pairs(cands, photos, stems, args.tau, args.workers)
 

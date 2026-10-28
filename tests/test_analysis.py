@@ -2,7 +2,7 @@
 import numpy as np
 from pycocotools import mask as mask_util
 
-from solarfil.analysis import RADII, _primary_scores, extent_failures, fates, iou_matrix, shrink_grow, vertex
+from solarfil.analysis import RADII, _primary_scores, extent_failures, fates, geometry_op, iou_matrix, shrink_grow, vertex
 
 
 def _rle(m):
@@ -63,3 +63,17 @@ def test_primary_scores_skip_extra_level_candidates():
         "a": {"level": np.array([0.5, 0.4, 0.5], np.float32), "score": np.array([0.1, 0.9, 0.3], np.float32)},
         "b": {"level": np.array([0.5], np.float32), "score": np.array([0.7], np.float32)}}}
     assert np.allclose(_primary_scores(c), [0.1, 0.3, 0.7])
+
+
+def test_geometry_ops_square_cross_and_disjointness():
+    a = np.zeros((40, 40), np.uint8); a[10:20, 10:20] = 1          # 10 x 10 block
+    b = np.zeros((40, 40), np.uint8); b[10:20, 21:31] = 1          # right neighbour, one empty column in between
+    grown = geometry_op([a, b], "dil_sq")
+    assert grown[0].sum() == 12 * 11                                           # grows by one pixel, except at the shared column
+    assert (grown[0] & grown[1]).sum() == 0                                    # the shared column goes to neither
+    assert (grown[0] >= a).all() and (grown[1] >= b).all()                     # every mask keeps its own pixels
+    sq, cross = geometry_op([a], "dil_sq")[0], geometry_op([a], "dil_x")[0]
+    assert sq.sum() == 12 * 12 and cross.sum() == 12 * 12 - 4                  # the cross kernel leaves out the four corners
+    assert geometry_op([a], "ero_sq")[0].sum() == 8 * 8 and geometry_op([a], "base")[0] is a
+    tiny = np.zeros((40, 40), np.uint8); tiny[5, 5] = 1
+    assert geometry_op([tiny], "ero_x") == []                                  # vanished masks are dropped
