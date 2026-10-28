@@ -14,29 +14,37 @@ threshold are submitted. The 4-page report is submitted separately through the c
 ## Results
 
 Every number is computed on **out-of-fold (OOF)** predictions: a photograph is only ever predicted by networks that did not
-see it, and every component after the networks (candidate filter, thresholds) is fitted on OOF predictions as well.
-707 annotated photographs, 8199 annotated filaments, five folds grouped by observation day. Intervals are 95 % percentile
-bootstrap intervals that resample observation days (photographs of one day are near-duplicates).
+see it (its map is the average of the 1536^2 and the 2048^2 network of its held-out fold: two members, whereas the
+deployed ensemble averages ten), and every component after the networks is cross-fitted over the same folds: the filter
+scores of the photographs of fold k come from a filter fitted on the candidates of the other four folds, the hand-tuned
+rule is the best cell of a two-parameter grid search on all candidates (optimistic for the rule). 707 annotated
+photographs, 8199 annotated filaments, five folds grouped by observation day. Intervals are 95 % percentile bootstrap
+intervals that resample observation days (photographs of one day are near-duplicates).
 
 | post-processing of the stage-1 maps | PQ [95 % CI] | SQ | DQ |
 |---|---|---|---|
-| threshold 0.5, connected components | 0.396 [0.386, 0.404] | 0.678 | 0.584 |
-| + fragment linking (14 px) | 0.407 [0.398, 0.416] | 0.677 | 0.602 |
-| + hand-tuned area / score filter | 0.442 [0.432, 0.451] | 0.682 | 0.648 |
-| **+ learned instance filter (final)** | **0.450 [0.440, 0.459]** | 0.680 | 0.661 |
+| threshold 0.5, connected components | 0.396 [0.387, 0.405] | 0.678 | 0.584 |
+| + fragment linking (14 px) | 0.408 [0.399, 0.417] | 0.677 | 0.603 |
+| + hand-tuned area / score filter (area >= 100 px, mean prob. >= 0.9) | 0.445 [0.435, 0.455] | 0.682 | 0.652 |
+| **+ learned instance filter (final)** | **0.451 [0.441, 0.461]** | 0.680 | 0.663 |
 | *annotator vs. annotator (same photograph)* | *0.340* | *0.634* | *0.536* |
 
-* The learned filter improves on the best hand-tuned rule (grid-searched on the same OOF candidates, i.e. optimistic for
-  the rule) by +0.008 PQ, paired-bootstrap interval [+0.005, +0.011]. It halves the false positives (4705 -> 2403) for a loss
-  of 6 % of the true positives. PQ per fold: 0.423 ... 0.462.
-* Rubric measures on the OOF predictions: semantic Dice of the union masks 0.680 [0.670, 0.690]; mean Dice / IoU of
-  intersecting prediction-annotation pairs 0.72 / 0.59; 84 % of the predictions overlap exactly one annotation and 3 %
-  two or more (one-to-many / many-to-one overlaps are rare, the errors are errors of extent, not of splitting or merging).
+* The learned filter improves on the best hand-tuned rule by +0.006 PQ, paired-bootstrap interval [+0.004, +0.009]. It
+  halves the false positives (4825 -> 2466) for a loss of 6 % of the true positives (5624 -> 5294). PQ per fold:
+  0.428 ... 0.469. `python -m solarfil.ablate` recomputes this table (see "Reproduce Table 1").
+* Where the remaining error is (annotated filaments, pooled over annotator copies): 64.6 % are matched at IoU > 0.5; 4.0 %
+  have a matching candidate that the filter dropped; 22.0 % overlap a candidate but never reach IoU 0.5 (errors of extent:
+  PQ is extremely sensitive to a one-pixel boundary shift of a thin filament); 9.4 % have no candidate at all.
+* Rubric measures on the OOF predictions: semantic Dice of the union masks 0.676 [0.665, 0.686]; mean Dice / IoU of
+  intersecting prediction-annotation pairs 0.73 / 0.59; 82.6 % of the predictions overlap exactly one annotation of an
+  annotator copy and 3.4 % two or more, 2.8 % of the annotations are split between several predictions (one-to-many /
+  many-to-one overlaps are rare, the errors are errors of extent, not of splitting or merging).
 * The annotators' own disagreement caps what any single prediction can reach: two annotators of the same photograph reach
-  PQ 0.34 against each other, whereas our consensus prediction reaches 0.448 against each of the annotators of the 296
+  PQ 0.34 against each other, whereas our consensus prediction reaches 0.450 against each of the annotators of the 296
   photographs that have several (the consensus target is closer to every annotator than the annotators are to each other).
 * Public leaderboard: the previous version of this pipeline (hand-tuned filter instead of the learned one) scored 0.38,
-  i.e. 0.87 x its OOF PQ. The OOF PQ is optimistic: the best epoch of every network is selected on its held-out fold.
+  i.e. about 0.85 x its OOF PQ. The OOF PQ is optimistic (the best epoch of every network is selected on its held-out fold)
+  and pessimistic (two network members instead of ten) at the same time.
 
 ### Examples
 
@@ -48,7 +56,7 @@ stage-1 foreground probability, candidate instances coloured by the learned scor
 
 ![out-of-fold examples](docs/examples_oof.jpg)
 
-*Out-of-fold examples (`python -m solarfil.figures oof`) at the median and 25th percentile of per-photograph PQ. Columns:
+*Out-of-fold examples (`python -m solarfil.figures oof`): photographs with at least eight annotated filaments per copy at the median (PQ 0.46) and the 25th percentile (PQ 0.38) of per-photograph PQ. Columns:
 photograph, annotator copies (cyan / orange / magenta), prediction (green = matched at IoU > 0.5, red = unmatched
 prediction, yellow = annotation without a match).*
 
@@ -58,7 +66,7 @@ prediction, yellow = annotation without a match).*
 
 ![overlap statistics](docs/summary.png)
 
-*Overlap and morphology statistics of 8199 annotated and 4688 predicted filaments.*
+*Overlap and morphology statistics of 8199 annotated and 4772 predicted filaments.*
 
 ## Method
 
@@ -69,7 +77,7 @@ prediction, yellow = annotation without a match).*
 | Stage 1 network | `model.py`, `train.py` | U-Net, ImageNet-pretrained EfficientNet-B4 encoder, scSE decoder attention (`segmentation_models_pytorch`), two outputs (foreground, border). BCE (positive weight 3) + soft Dice, plus 0.5 x (BCE + 0.5 Dice) on the border. 768^2 crops of the photograph resized to 1536^2 or 2048^2 (70 % centred on a filament), dihedral + photometric augmentation, AdamW (lr 6e-4, cosine), 36 / 32 epochs (1536^2 / 2048^2), batch 6, mixed precision, EMA 0.998 of the weights; the epoch with the best held-out PQ is kept. Five folds **grouped by observation day**, so near-duplicate photographs of one day never straddle folds. |
 | Inference | `infer.py`, `model.py` | Whole photograph, 8 dihedral transforms, ensemble of the 10 networks (5 folds x 2 resolutions), probabilities averaged at 2048^2: 80 forward passes per photograph. |
 | Candidates | `postprocess.py` | Foreground threshold 0.5, components < 40 px removed, fragments closer than 14 px linked (dilation of radius 7), at least 100 px; about 8 candidates per photograph (more than are annotated). Masks are disjoint by construction, as the submission format requires. The border map is trained, but cutting along it did not improve OOF PQ and is switched off. |
-| Learned instance filter | `rescore.py` | 36 features per candidate (probability statistics inside it, shape: area / skeleton length / width / solidity / orientation, position, contrast against a 12-px ring, context: neighbours, rank of its confidence, photograph-level activity). A histogram gradient-boosting regressor predicts the candidate's **expected PQ gain** g = mean over annotator copies of IoU x [IoU > 0.5]. Adding a candidate changes the PQ denominator TP + FP/2 + FN/2 by exactly +1/2 (match: TP+1, FN-1; no match: FP+1) and the numerator by its IoU, so it improves PQ iff g > PQ/2 ~ 0.22; we keep candidates with g_hat >= 0.20 (PQ is flat for thresholds in [0.18, 0.26]). Fitted on OOF candidates only; the stored file holds the training table, not a pickled model, so it does not depend on the scikit-learn version. |
+| Learned instance filter | `rescore.py` | 36 features per candidate (probability statistics inside it, shape: area / skeleton length / width / solidity / orientation, position, contrast against a 12-px ring, context: neighbours, rank of its confidence, photograph-level activity). A histogram gradient-boosting regressor predicts the candidate's **expected PQ gain** g = mean over annotator copies of IoU x [IoU > 0.5]. Adding a candidate changes the PQ denominator TP + FP/2 + FN/2 by exactly +1/2 (match: TP+1, FN-1; no match: FP+1) and the numerator by its IoU, so it improves PQ iff g > PQ/2 ~ 0.22; we keep candidates with g_hat >= 0.20 (PQ is flat for thresholds in [0.18, 0.26]). Fitted on OOF candidates only (the maps of the 1536^2 network alone and of the 1536^2 + 2048^2 pair, 12,648 candidates of 707 photographs; a view with more members is closer to the final ensemble); the stored file holds the training table, not a pickled model, so it does not depend on the scikit-learn version. |
 | Out-of-fold maps | `oof.py` | Regenerates the out-of-fold probability maps from the released checkpoints (each network predicts its held-out fold), so the filter can be refitted without retraining. |
 | Evaluation | `metric.py`, `evaluate.py`, `morphology.py` | Re-implementation of the official PQ (pooled over annotator copies, IoU > 0.5) and of the rubric measures (Dice, IoU, one-to-many / many-to-one), day-level bootstrap intervals, skeleton length / width statistics. |
 | Visualisation | `visualize.py`, `figures.py` | H-alpha overlays, a step-by-step figure of one photograph, report figures. |
@@ -127,6 +135,21 @@ python -m solarfil.oof --data_root $DATA --ckpts weights/Unet_*.pth --out work
 python -m solarfil.rescore --data_root $DATA --postcfg configs/postcfg.json --gt all=1,2,3,4 --thr 0.20 \
        --view work/oof_Unet_efficientnet-b4_s1536,work/oof_Unet_efficientnet-b4_s2048 --out work/rescorer_{name}.npz
 ```
+
+## Reproduce Table 1 (post-processing ablation with confidence intervals)
+
+```bash
+python -m solarfil.oof   --data_root $DATA --ckpts weights/Unet_*.pth --out work                 # out-of-fold maps, GPU, about 1 h
+python -m solarfil.cands --data_root $DATA --postcfg configs/postcfg.json --out work/cands_oof.pkl \
+       --view work/oof_Unet_efficientnet-b4_s1536,work/oof_Unet_efficientnet-b4_s2048              # candidates + cross-fitted scores
+python -m solarfil.ablate --data_root $DATA --oof_root work --cands work/cands_oof.pkl --tau 0.20 # the four rows, about 5 min on CPU
+python -m solarfil.cands --emit work/cands_oof.pkl --thr 0.20 --out work/pred_oof.csv            # the OOF predictions of the last row
+python -m solarfil.annotations --data_root $DATA --out gt_train.csv
+python -m solarfil.evaluate --gt gt_train.csv --pred work/pred_oof.csv --bootstrap 2000 --plots figures   # rubric measures
+```
+
+Row 4 uses the cross-fitted scores stored in the candidate file: the score of a candidate of fold k was predicted by a
+filter fitted on the candidates of the other four folds, which is why the file can be recomputed without any test data.
 
 ## Retrain everything (`RUN_MODE = "TRAIN_FULL"`, 20+ GPU hours)
 

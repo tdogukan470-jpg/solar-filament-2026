@@ -4,6 +4,8 @@
     python -m solarfil.figures oof --data_root ROOT --cands cands_oof.pkl --thr 0.2 --stems A B --out examples_oof.png
     # test examples: image | prediction (no ground truth exists for the test photos)
     python -m solarfil.figures test --sub submission.csv --img_dir test_images --stems A B C --out examples_test.png
+    # overlap and morphology statistics: annotations vs. out-of-fold predictions (and, optionally, test predictions)
+    python -m solarfil.figures summary --gt gt_train.csv --pred pred_oof.csv [--extra "prediction (test)=submission.csv"] --out summary.png
 
 Colours (all views): lime = prediction matched to an annotation at IoU > 0.5 (TP), red = unmatched prediction (FP),
 yellow = annotation without a matching prediction (FN); annotator copies of one photo get cyan / orange / magenta.
@@ -207,6 +209,26 @@ def summary_figure(gt_df: pd.DataFrame, pred_df: pd.DataFrame, tables: dict[str,
     return res
 
 
+def _morph_chunk(rles):
+    from .morphology import table
+    return table(rles)
+
+
+def morphology_tables(sets: dict[str, pd.DataFrame], workers: int = 2, cache: str = "") -> dict[str, np.ndarray]:
+    """Morphology descriptors (`morphology.table`) of every instance of every set; cached in `cache` when given."""
+    if cache and os.path.exists(cache):
+        return pickle.load(open(cache, "rb"))
+    from multiprocessing import Pool
+    out = {}
+    with Pool(workers) as pool:
+        for name, df in sets.items():
+            rl = df["segmentation_rle"].tolist()
+            out[name] = np.concatenate(pool.map(_morph_chunk, [rl[i:i + 200] for i in range(0, len(rl), 200)]))
+    if cache:
+        pickle.dump(out, open(cache, "wb"))
+    return out
+
+
 def main(argv=None):
     a = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = a.add_subparsers(dest="cmd", required=True)
@@ -214,9 +236,21 @@ def main(argv=None):
     o.add_argument("--thr", type=float, default=0.20); o.add_argument("--stems", nargs="+", required=True); o.add_argument("--out", required=True)
     t = sub.add_parser("test"); t.add_argument("--sub", required=True); t.add_argument("--img_dir", required=True)
     t.add_argument("--stems", nargs="+", required=True); t.add_argument("--out", required=True)
+    m = sub.add_parser("summary")
+    m.add_argument("--gt", required=True, help="annotations in the submission format (python -m solarfil.annotations)")
+    m.add_argument("--pred", required=True, help="out-of-fold predictions (python -m solarfil.cands --emit ...)")
+    m.add_argument("--extra", action="append", default=[], help='NAME=CSV, further sets for the morphology panels, e.g. "prediction (test)=submission.csv"')
+    m.add_argument("--workers", type=int, default=2); m.add_argument("--cache", default="", help="pickle caching the morphology tables")
+    m.add_argument("--out", required=True)
     args = a.parse_args(argv)
     if args.cmd == "oof":
         examples_oof(args.data_root, pickle.load(open(args.cands, "rb")), args.stems, args.thr, args.out)
+    elif args.cmd == "summary":
+        gt, pred = pd.read_csv(args.gt), pd.read_csv(args.pred)
+        sets = {"annotation": gt, "prediction (OOF)": pred}
+        sets.update({k: pd.read_csv(v) for k, v in (e.split("=", 1) for e in args.extra)})
+        res = summary_figure(gt, pred, morphology_tables(sets, args.workers, args.cache), args.out)
+        print(f"PQ {res['PQ']:.4f}  mean Dice / IoU of intersecting pairs {res['mean_dice_overlapping_pairs']:.3f} / {res['mean_iou_overlapping_pairs']:.3f}")
     else:
         examples_test(args.sub, args.img_dir, args.stems, args.out)
     print("wrote", args.out)
