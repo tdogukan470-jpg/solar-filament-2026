@@ -43,7 +43,10 @@ def disk_mask(img: np.ndarray) -> np.ndarray:
 
 
 def flatten(img: np.ndarray, mask: np.ndarray, sigma: float = 24.0) -> np.ndarray:
-    """Divide by a smooth background estimated inside the disk (normalised convolution)."""
+    """Divide by a smooth background estimated inside the disk (normalised convolution).
+
+    The Gaussian is applied at 1/4 resolution with sigma = 2 * `sigma` / 4 pixels, i.e. its effective standard deviation
+    is 2 * `sigma` = 48 native pixels for the default `sigma` = 24 (kept as is: the stored networks were trained with it)."""
     s = 4  # work at 1/4 resolution for speed; the background is smooth anyway
     h, w = img.shape
     small = cv2.resize(img.astype(np.float32), (w // s, h // s), interpolation=cv2.INTER_AREA)

@@ -1,6 +1,6 @@
-# Loose requirements, tested with two environments: the Kaggle notebook image of the reference run (exact versions in
-# requirements-reference.txt) and a newer one (torch 2.14, numpy 2.5, opencv 5.0, scikit-learn 1.9): both give the same
-# probability maps (difference <= 1/255) and the same submission rows.
+# Loose requirements. Checked on three test photographs in two environments, the Kaggle notebook image of the reference run
+# (exact versions in requirements-reference.txt) and a newer one (torch 2.14, numpy 2.5, opencv 5.0, scikit-learn 1.9):
+# both give the same probability maps (difference <= 1/255) and the same submission rows for them.
 torch>=2.2
 torchvision>=0.17
 segmentation-models-pytorch==0.5.0   # the stored checkpoints use the state-dict layout of this version
@@ -14,3 +14,4 @@ scikit-image>=0.22
 scikit-learn>=1.3                    # learned instance filter (rescore.py); any recent version
 matplotlib>=3.7
 pillow>=10
+pytest>=7                            # unit tests: python -m pytest -q tests

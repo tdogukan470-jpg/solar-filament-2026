@@ -1,4 +1,7 @@
-"""Tune post-processing on out-of-fold probabilities with the official PQ metric.
+"""Coordinate-descent tuner of the hand-tuned post-processing (`PostCfg`, `configs/postcfg.json`) on out-of-fold maps.
+
+Legacy of the first version of the pipeline: it produced the baseline rule that Table 1 of the report compares the learned
+filter with (the table itself uses the two-parameter grid of `ablate.py`).  The submitted pipeline does not use its output.
 
 python -m solarfil.tune --data_root <root> --oof work/oof_Unet_efficientnet-b4_s1536 [--oof other_dir ...]
 Multiple --oof dirs are averaged (model ensemble).

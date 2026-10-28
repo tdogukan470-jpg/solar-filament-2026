@@ -5,9 +5,14 @@ produces on filaments:
   * fragmentation: one long faint filament breaks into several blobs -> every blob is an FP
     and the real filament an FN.            -> fix: link fragments closer than `link_px`.
   * over-merging : two neighbouring filaments touch -> one blob, IoU < 0.5 with both.
-                                             -> fix: cut along the predicted border map.
+                                             -> possible fix: cut along the predicted border map (`border_thr`).
 Annotators draw filled polygons, so instance holes are filled.
-All parameters are tuned on out-of-fold predictions with the official metric (tune.py).
+
+The submitted pipeline uses the candidate settings stored in `configs/rescorer_all.npz` (`cand_cfg`: threshold 0.5,
+specks < 40 px removed, fragments closer than 14 px linked, candidates >= 100 px, border cutting and watershed seeds
+off) and keeps the candidates that the learned filter (`rescore.py`) scores >= its threshold.  The defaults of `PostCfg`
+and the (min_area, min_score) rule of `configs/postcfg.json` belong to the earlier, hand-tuned version of the pipeline;
+they are used only by `python -m solarfil.infer` without `--rescorer` (the baseline row of the ablation, `tune.py`).
 """
 from __future__ import annotations
 

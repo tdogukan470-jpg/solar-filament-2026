@@ -88,8 +88,8 @@ def main(argv=None):
     a.add_argument("--thr", type=float, default=None, help="--emit: score threshold (default: the one stored in the pickle)")
     a.add_argument("--data_root", default="")
     a.add_argument("--postcfg", default="", help="candidate extraction cfg (default: the one stored in --rescorer)")
-    a.add_argument("--view", action="append", default=[], help="OOF mode: comma-separated dirs (averaged); the first view "
-                   "that has a photo supplies its maps")
+    a.add_argument("--view", action="append", default=[], help="OOF mode: comma-separated dirs (averaged); give the "
+                   "views from poorest to richest: the last view that has all maps of a photo supplies them")
     a.add_argument("--probs", default="", help="test mode: directory of <stem>.npz maps")
     a.add_argument("--rescorer", default="", help="test mode: scorer file; OOF mode: only the features / cfg are taken")
     a.add_argument("--levels", type=float, nargs="+", default=[0.4, 0.5, 0.6])
