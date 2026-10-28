@@ -2,7 +2,7 @@
 import numpy as np
 from pycocotools import mask as mask_util
 
-from solarfil.analysis import RADII, extent_failures, fates, iou_matrix, shrink_grow, vertex
+from solarfil.analysis import RADII, _primary_scores, extent_failures, fates, iou_matrix, shrink_grow, vertex
 
 
 def _rle(m):
@@ -56,3 +56,10 @@ def test_vertex_of_a_parabola():
     assert abs(vertex(p) - 0.4) < 1e-9
     assert abs(vertex(-(radii + 1.3) ** 2) + 1.3) < 1e-9
     assert vertex(np.array([0.1, 0.2, 0.3, 0.4, 0.5])) == 1.0     # monotone curve: end point clamped, no extrapolation
+
+
+def test_primary_scores_skip_extra_level_candidates():
+    c = {"primary": 0.5, "photos": {
+        "a": {"level": np.array([0.5, 0.4, 0.5], np.float32), "score": np.array([0.1, 0.9, 0.3], np.float32)},
+        "b": {"level": np.array([0.5], np.float32), "score": np.array([0.7], np.float32)}}}
+    assert np.allclose(_primary_scores(c), [0.1, 0.3, 0.7])

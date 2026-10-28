@@ -24,6 +24,9 @@ them against every annotator copy exactly like the official metric (IoU > 0.5, p
     python -m solarfil.analysis extent --data_root D --cands cands_oof.pkl
         errors of extent: area ratio, recall and precision of the best candidate of the annotated filaments that it
         overlaps without matching them, for small and large annotations
+    python -m solarfil.analysis shift  --cands cands_oof.pkl --test_cands cands_test.pkl [--tau 0.20]
+        candidates per photograph, share kept by the filter and learned-score quantiles on the out-of-fold and on the test
+        photographs (a shift between the two would show up here; no ground truth needed)
 """
 from __future__ import annotations
 
@@ -360,9 +363,27 @@ def extent(cands, photos, stems, tau, split=1200):
                   f"{np.median(d[k, 2]):7.2f} {np.median(d[k, 3]):10.2f}")
 
 
+# ------------------------------------------------------------------------------------------------ shift
+def _primary_scores(cands: dict) -> np.ndarray:
+    return np.concatenate([c["score"][c["level"] == cands["primary"]] for c in cands["photos"].values()])
+
+
+def shift(oof: dict, test: dict, tau: float):
+    """Learned scores of the primary candidates of the out-of-fold photographs and of the test photographs."""
+    print(f"{'':>6s} {'photos':>7s} {'cand./photo':>12s} {'share >= tau':>13s} {'mean score':>11s}   score quantiles 10 / 25 / 50 / 75 / 90 %")
+    for name, c in (("OOF", oof), ("test", test)):
+        sc = _primary_scores(c)
+        print(f"{name:>6s} {len(c['photos']):7d} {len(sc) / len(c['photos']):12.2f} {100 * np.mean(sc >= tau):12.1f}% "
+              f"{sc.mean():11.3f}   " + " / ".join(f"{q:.3f}" for q in np.quantile(sc, [0.1, 0.25, 0.5, 0.75, 0.9])))
+
+
 def main(argv=None):
     a = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = a.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("shift")
+    p.add_argument("--cands", required=True, help="out-of-fold candidate file (python -m solarfil.cands)")
+    p.add_argument("--test_cands", required=True, help="candidate file of the test photographs (python -m solarfil.cands --probs ...)")
+    p.add_argument("--tau", type=float, default=0.20)
     for name in ("numbers", "annotators", "tau", "hand", "radius", "pairs", "extent"):
         p = sub.add_parser(name)
         p.add_argument("--data_root", required=True)
@@ -376,6 +397,8 @@ def main(argv=None):
         if name == "tau":
             p.add_argument("--taus", type=float, nargs="+", default=[0.0, 0.05, 0.10, 0.14, 0.18, 0.20, 0.22, 0.26, 0.30, 0.40])
     args = a.parse_args(argv)
+    if args.cmd == "shift":
+        return shift(pickle.load(open(args.cands, "rb")), pickle.load(open(args.test_cands, "rb")), args.tau)
     if args.cmd == "annotators":
         photos = load_photos(os.path.join(args.data_root, "train", "MAGFiLO_1.0_Annotations_kaggle2026_train.json"))
         return annotators(photos, sorted(photos))

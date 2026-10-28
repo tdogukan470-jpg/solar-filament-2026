@@ -32,9 +32,17 @@ intervals that resample observation days (photographs of one day are near-duplic
 | **+ learned instance filter (final)** | **0.451 [0.441, 0.461]** | 0.680 | 0.663 |
 | *annotator vs. annotator (same photograph)* | *0.340* | *0.634* | *0.536* |
 
-* The learned filter improves on the best hand-tuned rule by +0.006 PQ, paired-bootstrap interval [+0.004, +0.009]. It
+* The learned filter improves on the best hand-tuned rule by +0.006 PQ, paired-bootstrap interval [+0.0035, +0.0090]. It
   halves the false positives (4825 -> 2466) for a loss of 6 % of the true positives (5624 -> 5294). PQ per fold:
   0.428 ... 0.469. `python -m solarfil.ablate` recomputes this table (see "Reproduce Table 1").
+* Ensemble effect: on the map of a single network instead of the two-network average the same pipeline reaches PQ 0.446
+  (one 1536^2 network) and 0.446 (one 2048^2 network); the learned filter again beats the hand-tuned rule, by +0.007
+  [+0.004, +0.010] and +0.007 [+0.004, +0.009] (hand-tuned: 0.439 and 0.440). The average of two networks adds 0.005; the
+  ten-network, 8-fold-TTA ensemble of the submission cannot be evaluated out of fold (each photograph is out of fold for two
+  networks only). Commands: see "Reproduce Table 1".
+* Computation: stage 1 with ten networks and 8-fold TTA (80 forward passes per photograph) takes about one GPU hour for the
+  180 test photographs (about 20 s per photograph); candidate extraction and filtering take about 0.5 s per photograph on one
+  CPU core (80 s for the test set, `python -m solarfil.infer --from_probs ...`).
 * Where the remaining error is (annotated filaments, pooled over annotator copies): 64.6 % are matched at IoU > 0.5; 4.0 %
   have a matching candidate that the filter dropped; 22.0 % overlap a candidate but never reach IoU 0.5 (errors of extent:
   PQ is extremely sensitive to a one-pixel boundary shift of a thin filament); 9.4 % have no candidate at all. The errors
@@ -59,6 +67,18 @@ intervals that resample observation days (photographs of one day are near-duplic
   (`python -m solarfil.analysis radius`). On matched prediction-annotation pairs the prediction has about the area of the
   annotation (median ratio 1.05) but a shorter skeleton (117 vs 140 px) and a larger width (12.3 vs 9.8 px)
   (`python -m solarfil.analysis pairs`).
+
+### Where the organisers' rubric is addressed
+
+| Rubric item | Where |
+|---|---|
+| Mean Dice (semantic Dice of the union masks), PQ | Table 1 and the bullets above; `python -m solarfil.evaluate`, `solarfil.ablate`, `solarfil.analysis numbers` |
+| Distributions of Dice and IoU | `python -m solarfil.evaluate --plots figures` (histograms of the Dice / IoU of intersecting pairs), `docs/summary.png` |
+| One-to-many / many-to-one relations | same command; 82.6 % of the predictions overlap exactly one annotation, 3.4 % two or more |
+| Pipeline description (pre-processing to final prediction, architecture) | "Method" below, `pipeline.ipynb`, the 4-page report |
+| Apparent morphology of the predicted segmentations | `docs/examples_*.jpg`, `docs/pipeline_demo.jpg`, `python -m solarfil.morphology` (area, skeleton length, width, orientation of annotations vs. predictions) |
+| Code quality (modularity, documentation) | one module per stage (table below), a docstring and a command line per module, `tests/` (27 unit tests) |
+| Computational cost | about one GPU hour (T4 / P100) for the 180 test photographs, i.e. 20 s per photograph, almost all of it in the 80 network passes (10 networks x 8 transforms); the filter and the post-processing run on the CPU |
 
 ### Examples
 
@@ -167,6 +187,16 @@ python -m solarfil.annotations --data_root $DATA --out gt_train.csv
 python -m solarfil.evaluate --gt gt_train.csv --pred work/pred_oof.csv --bootstrap 2000 --plots figures   # rubric measures
 ```
 
+The single-network rows of the ensemble comparison use one view (a single OOF map directory) instead of the pair:
+
+```bash
+for S in 1536 2048; do
+  python -m solarfil.cands  --data_root $DATA --rescorer configs/rescorer_all.npz --levels 0.5 \
+         --view work/oof_Unet_efficientnet-b4_s$S --out work/cands_oof_$S.pkl
+  python -m solarfil.ablate --data_root $DATA --oof_root work --cands work/cands_oof_$S.pkl --tau 0.20
+done
+```
+
 Row 4 uses the cross-fitted scores stored in the candidate file: the score of a candidate of fold k was predicted by a
 filter fitted on the candidates of the other four folds, which is why the file can be recomputed without any test data.
 
@@ -184,6 +214,8 @@ python -m solarfil.analysis hand       --data_root $DATA --cands work/cands_oof.
 python -m solarfil.analysis radius     --data_root $DATA --cands work/cands_oof.pkl                 # mask thickness: pooled and per annotator (~15 min)
 python -m solarfil.analysis pairs      --data_root $DATA --cands work/cands_oof.pkl                 # matched prediction-annotation pairs (~5 min)
 python -m solarfil.analysis extent     --data_root $DATA --cands work/cands_oof.pkl                 # errors of extent: small annotations vs. long ones (~1 min)
+python -m solarfil.cands --probs work/probs --rescorer configs/rescorer_all.npz --out work/cands_test.pkl   # candidates + scores of the test photographs
+python -m solarfil.analysis shift      --cands work/cands_oof.pkl --test_cands work/cands_test.pkl  # candidates per photograph / share kept / score quantiles: OOF vs. test
 python -m solarfil.morphology --gt gt_train.csv --pred work/pred_oof.csv --out figures/morphology.png   # apparent morphology: annotations vs predictions
 # figures (the stems are the photographs printed by `analysis numbers` near the 50th / 25th percentile, and three test photographs)
 python -m solarfil.figures oof     --data_root $DATA --cands work/cands_oof.pkl --stems 20160526011254Uh 20151119133734Ch --out examples_oof.png
