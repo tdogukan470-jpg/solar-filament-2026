@@ -100,7 +100,8 @@ configs/
 weights/             the 10 trained U-Nets (82 MB each, ImageNet-pretrained EfficientNet-B4 U-Net, EMA weights)
 tests/               unit tests (metric, post-processing, re-scorer, evaluation, stage-2 geometry)
 docs/                figures
-requirements.txt     versions used for the submitted results (Kaggle notebook image, Python 3.13)
+requirements.txt     loose requirements (tested with the reference environment and a newer one)
+requirements-reference.txt   exact versions of the reference run (Kaggle notebook image, Python 3.13)
 ```
 
 ## Reproduce the submission

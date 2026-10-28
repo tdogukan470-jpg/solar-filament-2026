@@ -1,14 +1,16 @@
-# Versions used for the submitted results (Kaggle notebook image, Python 3.13).
-torch==2.11.0
-torchvision==0.26.0
-segmentation-models-pytorch==0.5.0
-timm==1.0.29
-opencv-python-headless>=4.8  # 4.14.0 in the reference run
+# Loose requirements, tested with two environments: the Kaggle notebook image of the reference run (exact versions in
+# requirements-reference.txt) and a newer one (torch 2.14, numpy 2.5, opencv 5.0, scikit-learn 1.9): both give the same
+# probability maps (difference <= 1/255) and the same submission rows.
+torch>=2.2
+torchvision>=0.17
+segmentation-models-pytorch==0.5.0   # the stored checkpoints use the state-dict layout of this version
+timm>=1.0
+numpy>=1.26
+opencv-python-headless>=4.8
 pycocotools>=2.0.7
-numpy==2.1.3
-pandas==2.3.3
-scipy==1.16.3
-scikit-image==0.25.2
-matplotlib==3.10.0
-pillow==12.3.0
-scikit-learn>=1.3  # learned instance filter (rescore.py); any recent version
+pandas>=2.0
+scipy>=1.11
+scikit-image>=0.22
+scikit-learn>=1.3                    # learned instance filter (rescore.py); any recent version
+matplotlib>=3.7
+pillow>=10
