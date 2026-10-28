@@ -135,8 +135,12 @@ filter refitted from them:
 ```bash
 python -m solarfil.oof --data_root $DATA --ckpts weights/Unet_*.pth --out work
 python -m solarfil.rescore --data_root $DATA --postcfg configs/postcfg.json --gt all=1,2,3,4 --thr 0.20 \
+       --view work/oof_Unet_efficientnet-b4_s1536 \
        --view work/oof_Unet_efficientnet-b4_s1536,work/oof_Unet_efficientnet-b4_s2048 --out work/rescorer_{name}.npz
 ```
+
+(two views: the maps of the 1536^2 network alone and the average of the 1536^2 and 2048^2 networks, i.e. the 12,648
+candidates stored in `configs/rescorer_all.npz`; `pipeline.ipynb` runs the same commands with `RUN_MODE = "REFIT_FILTER"`.)
 
 ## Reproduce Table 1 (post-processing ablation with confidence intervals)
 
