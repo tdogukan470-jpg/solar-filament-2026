@@ -20,7 +20,8 @@ day), so refined out-of-fold masks can be scored with the official metric withou
 
     python -m solarfil.refine prep  --data_root D --cands cands_oof.pkl --maps_root OOF_ROOT --out crops_oof.npz
     python -m solarfil.refine prep  --data_root D --cands cands_test.pkl --maps_root PROBS_TEST --split test --out crops_test.npz
-    python -m solarfil.refine train --crops crops_oof.npz --test_crops crops_test.npz --out_dir work/refine   # GPU
+    python -m solarfil.refine gain  --data_root D --cands cands_oof.pkl --out gain_oof.npy          # targets of the score head
+    python -m solarfil.refine train --crops crops_oof.npz --test_crops crops_test.npz --gain gain_oof.npy --out_dir work/refine   # GPU
     python -m solarfil.refine apply --cands cands_oof.pkl --crops_meta crops_oof_meta.npz --preds work/refine/pred_oof.npz --data_root D   # CPU
 
 `cands_*.pkl` is written by `python -m solarfil.cands` (candidate instances of every photo, their learned scores and
@@ -209,11 +210,51 @@ def prep(args):
     print(f"wrote {args.out}: {len(out['X'])} crops from {len(jobs)} photos", flush=True)
 
 
+def gain(args):
+    """Expected gain g = mean over annotator copies of IoU x 1(IoU > 0.5) of every candidate of --cands: the training target of
+    the score head, one value per crop in the row order of `prep`."""
+    from .annotations import load_photos, photo_gt_rles
+    from .rescore import expected_gain
+    cands = pickle.load(open(args.cands, "rb"))
+    photos = load_photos(os.path.join(args.data_root, "train", "MAGFiLO_1.0_Annotations_kaggle2026_train.json"))
+    out = []
+    for stem, c in sorted(cands["photos"].items()):
+        if not len(c["rle"]):
+            continue
+        gt = {k: v for k, v in photo_gt_rles(photos[stem]).items() if v}
+        rl = [{"size": [NATIVE, NATIVE], "counts": r.encode()} for r in c["rle"]]
+        ious = [np.asarray(mask_util.iou(rl, g, [0] * len(g))).reshape(len(rl), len(g)) for g in gt.values()]
+        out.append(expected_gain(ious, len(rl)) if ious else np.zeros(len(rl)))
+    out = np.concatenate(out).astype(np.float32)
+    np.save(args.out, out)
+    print(f"wrote {args.out}: {len(out)} gains, mean {out.mean():.3f}")
+
+
 # ----------------------------------------------------------------------------------------------------- network
-def build_net(encoder: str = "resnet34", weights: str | None = "imagenet"):
+def build_net(encoder: str = "resnet34", weights: str | None = "imagenet", score_head: bool = True):
+    """U-Net with N_CH input channels; forward(x) -> (mask logits (B, 1, H, W), score logit (B,) or None).
+
+    The optional score head (global average pool of the bottleneck + linear) is a second task on the same crop: it predicts
+    g = E[IoU x 1(IoU > 0.5)] of the *seed* over the annotator copies - the quantity the learned filter (rescore.py)
+    estimates from hand-made features - directly from the pixels."""
     import segmentation_models_pytorch as smp
-    return smp.Unet(encoder_name=encoder, encoder_weights=weights, in_channels=N_CH, classes=1,
-                    decoder_attention_type="scse")
+    import torch.nn as nn
+
+    class RefineNet(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.has_score = score_head
+            self.net = smp.Unet(encoder_name=encoder, encoder_weights=weights, in_channels=N_CH, classes=1,
+                                decoder_attention_type="scse",
+                                aux_params=dict(classes=1, pooling="avg", dropout=0.1) if score_head else None)
+
+        def forward(self, x):
+            if not self.has_score:
+                return self.net(x), None
+            mask, score = self.net(x)
+            return mask, score[:, 0]
+
+    return RefineNet()
 
 
 def augment(x: np.ndarray, t: np.ndarray, rng: np.random.Generator):
@@ -244,19 +285,21 @@ class CropSet:
     """Training crops of the photos outside one fold; samples are augmented on the fly (num_workers = 0 is enough:
     the arrays are in memory and the augmentations are a few cv2 / numpy calls)."""
 
-    def __init__(self, X, T, idx, seed=0, neg_weight=1.0):
-        self.X, self.T, self.idx = X, T, np.asarray(idx)
+    def __init__(self, X, T, idx, seed=0, neg_weight=1.0, G=None):
+        self.X, self.T, self.G, self.idx = X, T, G, np.asarray(idx)
         self.rng = np.random.default_rng(seed)
         has = T[self.idx].reshape(len(self.idx), -1).max(1) > 0
         self.pos, self.neg = self.idx[has], self.idx[~has]
         self.neg_weight = neg_weight
 
     def batch(self, bs):
+        """-> (x (B, 7, H, W), t (B, 1, H, W), g (B,)); g = expected gain of the seed, 0 when no gain vector is given."""
         n_neg = int(round(bs * self.neg_weight * len(self.neg) / max(len(self.idx), 1)))
         sel = np.concatenate([self.rng.choice(self.pos, bs - n_neg),
                               self.rng.choice(self.neg, n_neg) if n_neg and len(self.neg) else np.zeros(0, int)])
         xs, ts = zip(*[augment(self.X[i], self.T[i], self.rng) for i in sel])
-        return np.stack(xs), np.stack(ts)[:, None]
+        g = self.G[sel].astype(np.float32) if self.G is not None else np.zeros(len(sel), np.float32)
+        return np.stack(xs), np.stack(ts)[:, None], g
 
 
 def prefetch(ds: CropSet, bs: int, n: int, depth: int = 6):
@@ -284,32 +327,41 @@ def dice_bce(logits, target, eps=1.0):
     return bce + (1 - (2 * inter + eps) / (den + eps)).mean()
 
 
-def predict_crops(models, X: np.ndarray, bs: int = 64, flips: bool = True, dev=None) -> np.ndarray:
-    """Averaged probabilities (N, H, W) as uint8 over the models and the (h, v, hv) flips of the crop."""
+def predict_crops(models, X: np.ndarray, bs: int = 64, flips: bool = True, dev=None):
+    """-> (masks (N, H, W) uint8, scores (N,) float32 or None): probabilities and score-head outputs averaged over the models
+    and the (h, v, hv) flips of the crop."""
     import torch
     dev = dev or next(models[0].parameters()).device
     out = np.zeros((len(X), CROP_H, CROP_W), np.uint8)
+    score = np.zeros(len(X), np.float32) if getattr(models[0], "has_score", False) else None
     variants = [(), (3,), (2,), (2, 3)] if flips else [()]
     with torch.no_grad():
         for a in range(0, len(X), bs):
             xb = torch.from_numpy(X[a:a + bs].astype(np.float32) / 255.0).to(dev)
-            acc, n = 0, 0
+            acc, sacc, n = 0, 0, 0
             for m in models:
                 for fl in variants:
                     xt = torch.flip(xb, fl) if fl else xb
                     with torch.autocast(device_type=dev.type, enabled=dev.type == "cuda"):
-                        p = torch.sigmoid(m(xt).float())
+                        lo, so = m(xt)
+                    p = torch.sigmoid(lo.float())
                     acc = acc + (torch.flip(p, fl) if fl else p)
+                    if so is not None:
+                        sacc = sacc + torch.sigmoid(so.float())
                     n += 1
             out[a:a + bs] = np.clip(np.rint((acc / n)[:, 0].cpu().numpy() * 255.0), 0, 255).astype(np.uint8)
-    return out
+            if score is not None:
+                score[a:a + bs] = (sacc / n).cpu().numpy()
+    return out, score
 
 
-def train_fold(X, T, tr_idx, va_idx, args, dev, log=print):
+def train_fold(X, T, G, tr_idx, va_idx, args, dev, log=print):
+    """Train one fold's refiner on the crops `tr_idx`; G (N,) = expected gain of every seed (None: no score head)."""
     import torch
+    import torch.nn.functional as F
     torch.manual_seed(args.seed)
-    net = build_net(args.encoder, None if args.weights == "none" else args.weights).to(dev)
-    ds = CropSet(X, T, tr_idx, args.seed, args.neg_weight)
+    net = build_net(args.encoder, None if args.weights == "none" else args.weights, score_head=G is not None).to(dev)
+    ds = CropSet(X, T, tr_idx, args.seed, args.neg_weight, G)
     steps_per_epoch = max(len(tr_idx) // args.bs, 1)
     steps = args.epochs * steps_per_epoch
     opt = torch.optim.AdamW(net.parameters(), lr=args.lr, weight_decay=1e-4)
@@ -321,12 +373,16 @@ def train_fold(X, T, tr_idx, va_idx, args, dev, log=print):
     t0 = time.time()
     for ep in range(1, args.epochs + 1):
         net.train()
-        tot = 0.0
-        for xb, tb in prefetch(ds, args.bs, steps_per_epoch):
-            xb, tb = torch.from_numpy(xb).to(dev), torch.from_numpy(tb).to(dev)
+        tot = tot_s = 0.0
+        for xb, tb, gb in prefetch(ds, args.bs, steps_per_epoch):
+            xb, tb, gb = torch.from_numpy(xb).to(dev), torch.from_numpy(tb).to(dev), torch.from_numpy(gb).to(dev)
             with torch.autocast(device_type=dev.type, enabled=dev.type == "cuda"):
-                lo = net(xb)
+                lo, so = net(xb)
             loss = dice_bce(lo.float(), tb)
+            if so is not None:                                   # score head: soft-label BCE towards the seed's expected gain
+                ls = F.binary_cross_entropy_with_logits(so.float(), gb)
+                loss = loss + args.score_w * ls
+                tot_s += ls.item()
             opt.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
             scaler.unscale_(opt)
@@ -338,9 +394,11 @@ def train_fold(X, T, tr_idx, va_idx, args, dev, log=print):
                 for e, p in zip(ema, net.parameters()):
                     e.mul_(args.ema).add_(p.detach(), alpha=1 - args.ema)
             tot += loss.item()
-        msg = f"ep {ep:02d} loss {tot / steps_per_epoch:.4f} {time.time() - t0:.0f}s"
+        msg = f"ep {ep:02d} loss {tot / steps_per_epoch:.4f}" + (f" score-bce {tot_s / steps_per_epoch:.4f}" if G is not None else "") \
+              + f" {time.time() - t0:.0f}s"
         if len(va_idx) and (ep % args.val_every == 0 or ep == args.epochs):
-            msg += f" | val soft-IoU {val_iou(net, ema, X, T, va_idx, dev):.4f}"
+            iou, r = val_metrics(net, ema, X, T, G, va_idx, dev)
+            msg += f" | val soft-IoU {iou:.4f}" + (f" score corr {r:.3f}" if G is not None else "")
         log(msg)
     with torch.no_grad():                                    # load the EMA weights
         for e, p in zip(ema, net.parameters()):
@@ -348,8 +406,9 @@ def train_fold(X, T, tr_idx, va_idx, args, dev, log=print):
     return net.eval()
 
 
-def val_iou(net, ema, X, T, va_idx, dev, max_n=1500) -> float:
-    """Mean IoU (threshold 0.5) between the prediction and the consensus target on validation crops that have one."""
+def val_metrics(net, ema, X, T, G, va_idx, dev, max_n=1500):
+    """(mean IoU at threshold 0.5 between the prediction and the consensus target on validation crops that have one,
+    Pearson correlation of the predicted score with the expected gain on validation crops; nan without score head)."""
     import torch
     backup = [p.detach().clone() for p in net.parameters()]
     with torch.no_grad():
@@ -357,14 +416,20 @@ def val_iou(net, ema, X, T, va_idx, dev, max_n=1500) -> float:
             p.copy_(e)
     net.eval()
     idx = [i for i in va_idx if T[i].max() > 0][:max_n]
-    pr = predict_crops([net], X[idx], flips=False, dev=dev) > 127
+    pr = predict_crops([net], X[idx], flips=False, dev=dev)[0] > 127
     tg = T[idx] > 127
     iou = ((pr & tg).sum((1, 2)) / np.maximum((pr | tg).sum((1, 2)), 1)).mean() if len(idx) else float("nan")
+    r = float("nan")
+    if G is not None:
+        iv = np.asarray(va_idx)[:max_n]
+        sc = predict_crops([net], X[iv], flips=False, dev=dev)[1]
+        if len(iv) > 2 and np.std(sc) > 0 and np.std(G[iv]) > 0:
+            r = float(np.corrcoef(sc, G[iv])[0, 1])
     with torch.no_grad():
         for b, p in zip(backup, net.parameters()):
             p.copy_(b)
     net.train()
-    return float(iou)
+    return float(iou), r
 
 
 def train(args):
@@ -374,21 +439,38 @@ def train(args):
     d = np.load(args.crops)
     X, T, meta = d["X"], d["T_frag" if args.frag else "T"], d["meta"]
     fold = meta[:, 4].astype(int)
+    G = np.load(args.gain).astype(np.float32) if args.gain else None
+    if G is not None and len(G) != len(X):
+        raise ValueError(f"--gain has {len(G)} entries for {len(X)} crops (run `refine gain` on the same candidate file)")
     Xt = np.load(args.test_crops)["X"] if args.test_crops else None
+    if args.limit:                                                    # debug: a random subset of crops of every fold
+        keep = np.sort(np.random.default_rng(0).choice(len(X), min(args.limit, len(X)), replace=False))
+        X, T, meta, fold = X[keep], T[keep], meta[keep], fold[keep]
+        G = G[keep] if G is not None else None
+        Xt = Xt[:args.limit] if Xt is not None else None
     pred_oof = np.zeros((len(X), CROP_H, CROP_W), np.uint8)
+    score_oof = np.full(len(X), np.nan, np.float32)
     pred_test = np.zeros((len(Xt), CROP_H, CROP_W), np.float32) if Xt is not None else None
+    score_test = np.zeros(len(Xt), np.float32) if Xt is not None else None
     folds = args.folds or list(range(5))
     for k in folds:
         tr, va = np.where(fold != k)[0], np.where(fold == k)[0]
         print(f"=== fold {k}: train {len(tr)} crops, val {len(va)}", flush=True)
-        net = train_fold(X, T, tr, va, args, dev, log=lambda s: print(s, flush=True))
-        torch.save({"state_dict": net.state_dict(), "args": vars(args), "fold": k}, os.path.join(args.out_dir, f"refine_f{k}.pth"))
-        pred_oof[va] = predict_crops([net], X[va], dev=dev)
+        net = train_fold(X, T, G, tr, va, args, dev, log=lambda s: print(s, flush=True))
+        torch.save({"state_dict": net.state_dict(), "args": vars(args), "fold": k, "score_head": G is not None},
+                   os.path.join(args.out_dir, f"refine_f{k}.pth"))
+        p, sc = predict_crops([net], X[va], dev=dev)
+        pred_oof[va] = p
+        if sc is not None:
+            score_oof[va] = sc
         if Xt is not None:
-            pred_test += predict_crops([net], Xt, dev=dev).astype(np.float32) / len(folds)
-        np.savez_compressed(os.path.join(args.out_dir, "pred_oof.npz"), p=pred_oof, fold=fold)
+            p, sc = predict_crops([net], Xt, dev=dev)
+            pred_test += p.astype(np.float32) / len(folds)
+            if sc is not None:
+                score_test += sc / len(folds)
+        np.savez_compressed(os.path.join(args.out_dir, "pred_oof.npz"), p=pred_oof, s=score_oof, fold=fold)
         if Xt is not None:
-            np.savez_compressed(os.path.join(args.out_dir, "pred_test.npz"), p=np.rint(pred_test).astype(np.uint8))
+            np.savez_compressed(os.path.join(args.out_dir, "pred_test.npz"), p=np.rint(pred_test).astype(np.uint8), s=score_test)
     print("done", flush=True)
 
 
@@ -463,6 +545,92 @@ def paste_back(probs: np.ndarray, affines: np.ndarray, seeds: list[np.ndarray], 
     return masks, members, np.asarray(stats, np.float32).reshape(-1, 5)
 
 
+# ----------------------------------------------------------------------------------------------------- stacking
+def _score_rows(cands: dict, meta, s_all: np.ndarray, gt_photos=None) -> list[dict]:
+    """Per photo: stem, fold, primary candidate positions, features X (n, 36), CNN scores s (n,) and - with ground truth -
+    the IoU matrices (one per annotator copy) and the expected gain y of every primary candidate."""
+    from .annotations import photo_gt_rles
+    from .rescore import expected_gain, select_classes
+    mm = meta["meta"]
+    rows = []
+    for k, stem in enumerate(str(x) for x in meta["stems"]):
+        c = cands["photos"][stem]
+        crop = np.where(mm[:, 0] == k)[0]                                 # rows of this photo, in the order of c["rle"]
+        prim = [j for j in range(len(c["rle"])) if abs(float(c["level"][j]) - cands["primary"]) < 1e-6]
+        r = {"stem": stem, "prim": prim, "fold": int(mm[crop[0], 4]) if len(crop) else -1,
+             "X": np.asarray(c["X"], np.float32).reshape(len(prim), -1), "s": s_all[crop[prim]] if prim else np.zeros(0, np.float32)}
+        if gt_photos is not None:
+            gt = {a: v for a, v in photo_gt_rles(gt_photos[stem]).items() if v}
+            r["ious"], r["y"] = [], np.zeros(len(prim), np.float32)
+            if prim and gt:
+                rl = [{"size": [NATIVE, NATIVE], "counts": c["rle"][j].encode()} for j in prim]
+                ious = [np.asarray(mask_util.iou(rl, g, [0] * len(g))).reshape(len(rl), len(g)) for g in gt.values()]
+                r["ious"] = select_classes(ious, [np.asarray(gt_photos[stem].categories[a]) for a in gt], {1, 2, 3, 4})
+                r["y"] = expected_gain(r["ious"], len(prim)).astype(np.float32) if r["ious"] else r["y"]
+        rows.append(r)
+    return rows
+
+
+def stack(args):
+    """Does the CNN score add information to the hand-made features of the learned filter (rescore.py)?
+
+    Gradient boosting is cross-fitted over the stage-1 folds on [features], [features + CNN score]; the CNN score alone and
+    the mean of the two are scored too.  Pooled official PQ of the selected primary candidates (no refinement) is printed
+    for the thresholds of rescore.THR_GRID.  --out_cands writes a candidate file whose scores are the cross-fitted scores of
+    --method (so `apply` selects with them); --test_* does the same for the test photographs (final model on all folds)."""
+    from .annotations import load_photos
+    from .rescore import THR_GRID, fit_model, pq_of
+    cands = pickle.load(open(args.cands, "rb"))
+    gt_photos = load_photos(os.path.join(args.data_root, "train", "MAGFiLO_1.0_Annotations_kaggle2026_train.json"))
+    rows = _score_rows(cands, np.load(args.crops_meta, allow_pickle=True), np.load(args.preds)["s"], gt_photos)
+    feats = {"x": lambda r: r["X"], "xs": lambda r: np.column_stack([r["X"], r["s"]])}
+    cv = {name: {} for name in ("x", "xs", "s", "avg")}
+    for k in range(5):
+        tr = [r for r in rows if r["fold"] != k and len(r["prim"])]
+        for name, f in feats.items():
+            mdl = fit_model(np.concatenate([f(r) for r in tr]), np.concatenate([r["y"] for r in tr]))
+            for r in rows:
+                if r["fold"] == k and len(r["prim"]):
+                    cv[name][r["stem"]] = mdl.predict(f(r))
+    for r in rows:
+        cv["s"][r["stem"]] = r["s"]
+        cv["avg"][r["stem"]] = 0.5 * (cv["x"].get(r["stem"], 0) + r["s"])
+    y_all = np.concatenate([r["y"] for r in rows if len(r["prim"])])
+    names = {"x": "features only (baseline)", "xs": "features + CNN score", "s": "CNN score only", "avg": "mean of features-model and CNN score"}
+    for name in cv:
+        sc = np.concatenate([cv[name][r["stem"]] for r in rows if len(r["prim"])])
+        sweep = {float(t): pq_of([(r["ious"], cv[name][r["stem"]] >= t if len(r["prim"]) else np.zeros(0, bool)) for r in rows
+                                  if r["ious"]]) for t in THR_GRID}
+        best = max(sweep, key=lambda t: sweep[t].pq)
+        print(f"{names[name]:40s} corr(g_hat, g) {np.corrcoef(sc, y_all)[0, 1]:.3f} | tau 0.20: {sweep[0.2]} | best tau {best:.2f}: "
+              f"PQ {sweep[best].pq:.4f}", flush=True)
+    if args.out_cands:
+        out = pickle.loads(pickle.dumps(cands))
+        for r in rows:
+            c = out["photos"][r["stem"]]
+            c["score"] = np.full(len(c["rle"]), np.nan, np.float32)
+            if len(r["prim"]):
+                c["score"][r["prim"]] = cv[args.method][r["stem"]]
+        out["thr"] = args.thr
+        pickle.dump(out, open(args.out_cands, "wb"))
+        print("wrote", args.out_cands)
+    if args.test_cands:                                                  # final model on all folds -> test photographs
+        fit_all = lambda f: fit_model(np.concatenate([f(r) for r in rows if len(r["prim"])]), y_all)
+        mx = fit_all(feats["x"]) if args.method in ("x", "avg") else None
+        mxs = fit_all(feats["xs"]) if args.method == "xs" else None
+        predict = {"x": lambda r: mx.predict(r["X"]), "xs": lambda r: mxs.predict(np.column_stack([r["X"], r["s"]])),
+                   "s": lambda r: r["s"], "avg": lambda r: 0.5 * (mx.predict(r["X"]) + r["s"])}[args.method]
+        tc = pickle.load(open(args.test_cands, "rb"))
+        for r in _score_rows(tc, np.load(args.test_meta, allow_pickle=True), np.load(args.test_preds)["s"]):
+            c = tc["photos"][r["stem"]]
+            c["score"] = np.full(len(c["rle"]), np.nan, np.float32)
+            if len(r["prim"]):
+                c["score"][r["prim"]] = predict(r)
+        tc["thr"] = args.thr
+        pickle.dump(tc, open(args.out_test_cands, "wb"))
+        print("wrote", args.out_test_cands)
+
+
 # ----------------------------------------------------------------------------------------------------- apply
 def refined_photo(c, idx, M, P, thr, t, fallback="seed", primary=0.5, merge=True):
     """Refined masks of the selected (primary, score >= thr) candidates of one photo -> (seeds, masks)."""
@@ -520,6 +688,10 @@ def main(argv=None):
     p.add_argument("--out", required=True)
     p.add_argument("--workers", type=int, default=4)
     p.add_argument("--limit", type=int, default=0)
+    g = sub.add_parser("gain", help="expected gain of every candidate = targets of the score head")
+    g.add_argument("--data_root", required=True)
+    g.add_argument("--cands", required=True)
+    g.add_argument("--out", required=True)
     q = sub.add_parser("train")
     q.add_argument("--crops", required=True)
     q.add_argument("--test_crops", default="")
@@ -535,6 +707,21 @@ def main(argv=None):
     q.add_argument("--neg_weight", type=float, default=1.0, help="share of crops without any ground truth (relative to their frequency)")
     q.add_argument("--val_every", type=int, default=5)
     q.add_argument("--seed", type=int, default=0)
+    q.add_argument("--gain", default="", help="npy from `refine gain` (expected gain of every seed): adds the score head")
+    q.add_argument("--score_w", type=float, default=0.5, help="weight of the score-head loss")
+    q.add_argument("--limit", type=int, default=0, help="debug: only N random crops")
+    k = sub.add_parser("stack", help="add the CNN score to the learned filter (CPU)")
+    k.add_argument("--data_root", required=True)
+    k.add_argument("--cands", required=True)
+    k.add_argument("--crops_meta", required=True)
+    k.add_argument("--preds", required=True, help="pred_oof.npz of `train` (needs the score head)")
+    k.add_argument("--method", default="xs", choices=["x", "xs", "s", "avg"], help="scores written to --out_cands / --out_test_cands")
+    k.add_argument("--thr", type=float, default=0.20)
+    k.add_argument("--out_cands", default="")
+    k.add_argument("--test_cands", default="")
+    k.add_argument("--test_meta", default="")
+    k.add_argument("--test_preds", default="")
+    k.add_argument("--out_test_cands", default="")
     s = sub.add_parser("apply")
     s.add_argument("--cands", required=True)
     s.add_argument("--crops_meta", required=True)
@@ -546,7 +733,7 @@ def main(argv=None):
     s.add_argument("--data_root", default="", help="evaluate against the annotators instead of writing a submission")
     s.add_argument("--out", default="submission_refined.csv")
     args = a.parse_args(argv)
-    {"prep": prep, "train": train, "apply": apply}[args.cmd](args)
+    {"prep": prep, "gain": gain, "train": train, "stack": stack, "apply": apply}[args.cmd](args)
 
 
 if __name__ == "__main__":

@@ -123,7 +123,7 @@ def main(argv=None):
             n_p = int((c["level"] == args.primary).sum())
             if n_p:
                 score[:n_p] = resc["model"].predict(c["X"])
-            photos[s] = {"rle": c["rle"], "level": c["level"], "score": score, "maps": names[s]}
+            photos[s] = {"rle": c["rle"], "level": c["level"], "score": score, "maps": names[s], "X": c["X"]}
         pickle.dump({"photos": photos, "primary": args.primary, "thr": resc["thr"]}, open(args.out, "wb"))
         print(f"wrote {args.out}: {sum(len(p['rle']) for p in photos.values())} candidates in {len(photos)} photos")
         return
@@ -164,7 +164,7 @@ def main(argv=None):
         for s in cands:
             if folds[s] == k and rows[s]:
                 score[s][:rows[s]] = mdl.predict(cands[s]["X"])
-    photos = {s: {"rle": c["rle"], "level": c["level"], "score": score[s], "maps": names[s]} for s, c in cands.items()}
+    photos = {s: {"rle": c["rle"], "level": c["level"], "score": score[s], "maps": names[s], "X": c["X"]} for s, c in cands.items()}
     pickle.dump({"photos": photos, "primary": args.primary, "folds": {s: folds[s] for s in photos}}, open(args.out, "wb"))
     print(f"wrote {args.out}: {sum(len(p['rle']) for p in photos.values())} candidates in {len(photos)} photos")
 

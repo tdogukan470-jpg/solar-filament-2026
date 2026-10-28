@@ -70,6 +70,7 @@ prediction, yellow = annotation without a match).*
 | Inference | `infer.py`, `model.py` | Whole photograph, 8 dihedral transforms, ensemble of the 10 networks (5 folds x 2 resolutions), probabilities averaged at 2048^2: 80 forward passes per photograph. |
 | Candidates | `postprocess.py` | Foreground threshold 0.5, components < 40 px removed, fragments closer than 14 px linked (dilation of radius 7), at least 100 px; about 8 candidates per photograph (more than are annotated). Masks are disjoint by construction, as the submission format requires. The border map is trained, but cutting along it did not improve OOF PQ and is switched off. |
 | Learned instance filter | `rescore.py` | 36 features per candidate (probability statistics inside it, shape: area / skeleton length / width / solidity / orientation, position, contrast against a 12-px ring, context: neighbours, rank of its confidence, photograph-level activity). A histogram gradient-boosting regressor predicts the candidate's **expected PQ gain** g = mean over annotator copies of IoU x [IoU > 0.5]. Adding a candidate changes the PQ denominator TP + FP/2 + FN/2 by exactly +1/2 (match: TP+1, FN-1; no match: FP+1) and the numerator by its IoU, so it improves PQ iff g > PQ/2 ~ 0.22; we keep candidates with g_hat >= 0.20 (PQ is flat for thresholds in [0.18, 0.26]). Fitted on OOF candidates only; the stored file holds the training table, not a pickled model, so it does not depend on the scikit-learn version. |
+| Out-of-fold maps | `oof.py` | Regenerates the out-of-fold probability maps from the released checkpoints (each network predicts its held-out fold), so the filter can be refitted without retraining. |
 | Evaluation | `metric.py`, `evaluate.py`, `morphology.py` | Re-implementation of the official PQ (pooled over annotator copies, IoU > 0.5) and of the rubric measures (Dice, IoU, one-to-many / many-to-one), day-level bootstrap intervals, skeleton length / width statistics. |
 | Visualisation | `visualize.py`, `figures.py` | H-alpha overlays, a step-by-step figure of one photograph, report figures. |
 | Stage 2 (experimental) | `refine.py`, `cands.py` | Instance-conditioned re-segmentation of every selected candidate in its own rotated crop (code and training protocol only; see the docstring). |
@@ -106,7 +107,7 @@ Command line equivalent:
 pip install -r requirements.txt
 DATA=/path/to/MAGFiLO_1.0_Kaggle_2026            # contains train/ and test/
 python -m solarfil.weights --manifest configs/weights.json --dest weights
-python -m solarfil.infer --data_root $DATA --ckpts weights/*.pth --rescorer configs/rescorer_all.npz \
+python -m solarfil.infer --data_root $DATA --ckpts weights/Unet_*.pth --rescorer configs/rescorer_all.npz \
        --save_probs work/probs --out submission.csv
 python -m solarfil.infer --from_probs work/probs --rescorer configs/rescorer_all.npz --out submission.csv   # CPU: only the post-processing
 ```
@@ -114,6 +115,18 @@ python -m solarfil.infer --from_probs work/probs --rescorer configs/rescorer_all
 GPU arithmetic in half precision is not bit-wise deterministic: re-running may move a few boundary pixels, not the
 filaments. The learned filter is re-fitted from `configs/rescorer_all.npz` in a few seconds on every run (it is
 deterministic).
+
+## Refit the learned filter without retraining the networks
+
+The learned instance filter is fitted on out-of-fold probability maps. They can be regenerated from the released weights
+(each checkpoint predicts the photographs of its held-out fold, 8-fold TTA, about one GPU hour for the ten networks) and the
+filter refitted from them:
+
+```bash
+python -m solarfil.oof --data_root $DATA --ckpts weights/Unet_*.pth --out work
+python -m solarfil.rescore --data_root $DATA --postcfg configs/postcfg.json --gt all=1,2,3,4 --thr 0.20 \
+       --view work/oof_Unet_efficientnet-b4_s1536,work/oof_Unet_efficientnet-b4_s2048 --out work/rescorer_{name}.npz
+```
 
 ## Retrain everything (`RUN_MODE = "TRAIN_FULL"`, 20+ GPU hours)
 
