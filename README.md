@@ -60,6 +60,9 @@ intervals that resample observation days (photographs of one day are near-duplic
 * Public leaderboard: this version (learned filter) scores 0.39, i.e. 0.86 x its OOF PQ; the previous version (hand-tuned
   filter) scored 0.38 (0.85-0.87 x the OOF PQ of its rule). The OOF PQ is optimistic (best epoch and post-processing
   parameters chosen on the same OOF predictions) and pessimistic (two network members instead of ten) at the same time.
+* Multiscale IoU (Ahmadzadeh et al., ICIP 2021; contours compared on grids of 1 ... 512 px, `python -m solarfil.analysis miou`):
+  0.66 for the union masks of our OOF predictions against each annotator copy (0.65 between two annotator copies of the
+  same photograph), 0.79 for matched prediction-annotation pairs.
 * Use of the leaderboard: one score per version, plus two global checks of the mask boundary (never per-photograph or
   per-filament decisions): the submitted file with every mask grown or shrunk by one pixel (3x3 square kernel) scores 0.34
   in both cases, in line with the OOF effect of the same operations (x0.90 / x0.86, `python -m solarfil.analysis geometry`),
