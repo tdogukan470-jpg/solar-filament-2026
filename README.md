@@ -57,11 +57,13 @@ intervals that resample observation days (photographs of one day are near-duplic
   PQ 0.34 and a semantic Dice of 0.61 against each other, whereas our consensus prediction reaches PQ 0.450 and Dice 0.68
   against each of the annotators of the 296 photographs that have several (the consensus target is closer to every
   annotator than the annotators are to each other).
-* Public leaderboard: the previous version of this pipeline (hand-tuned filter instead of the learned one) scored 0.38,
-  i.e. 0.85-0.87 x the OOF PQ of its hand-tuned rule (0.437-0.445 depending on the rule's parameters). The OOF PQ is
-  optimistic (the best epoch of every network is selected on its held-out fold, and the post-processing parameters were
-  chosen on the same OOF predictions) and pessimistic (two network members instead of ten) at the same time; we cannot
-  separate these effects.
+* Public leaderboard: this version (learned filter) scores 0.39, i.e. 0.86 x its OOF PQ; the previous version (hand-tuned
+  filter) scored 0.38 (0.85-0.87 x the OOF PQ of its rule). The OOF PQ is optimistic (best epoch and post-processing
+  parameters chosen on the same OOF predictions) and pessimistic (two network members instead of ten) at the same time.
+* Use of the leaderboard: one score per version, plus two global checks of the mask boundary (never per-photograph or
+  per-filament decisions): the submitted file with every mask grown or shrunk by one pixel (3x3 square kernel) scores 0.34
+  in both cases, in line with the OOF effect of the same operations (x0.90 / x0.86, `python -m solarfil.analysis geometry`),
+  so the test annotations are not drawn thinner or thicker than the training annotations and the masks are left as they are.
 * Annotators differ in how thick they draw. Growing or shrinking every mask by one pixel costs 0.026 PQ on the pooled OOF
   set (optimum: radius 0), but the PQ-optimal uniform radius estimated per annotator ranges from about -0.7 to +1.0 px
   (`python -m solarfil.analysis radius`). On matched prediction-annotation pairs the prediction has about the area of the
@@ -77,7 +79,7 @@ intervals that resample observation days (photographs of one day are near-duplic
 | One-to-many / many-to-one relations | same command; 82.6 % of the predictions overlap exactly one annotation, 3.4 % two or more |
 | Pipeline description (pre-processing to final prediction, architecture) | "Method" below, `pipeline.ipynb`, the 4-page report |
 | Apparent morphology of the predicted segmentations | `docs/examples_*.jpg`, `docs/pipeline_demo.jpg`, `python -m solarfil.morphology` (area, skeleton length, width, orientation of annotations vs. predictions) |
-| Code quality (modularity, documentation) | one module per stage (table below), a docstring and a command line per module, `tests/` (28 unit tests) |
+| Code quality (modularity, documentation) | one module per stage (table below), a docstring and a command line per module, `tests/` (29 unit tests) |
 | Computational cost | about one GPU hour (T4 / P100) for the 180 test photographs, i.e. 20 s per photograph, almost all of it in the 80 network passes (10 networks x 8 transforms); the filter and the post-processing run on the CPU |
 
 ### Examples

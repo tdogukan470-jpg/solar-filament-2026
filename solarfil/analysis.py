@@ -19,6 +19,9 @@ them against every annotator copy exactly like the official metric (IoU > 0.5, p
     python -m solarfil.analysis radius --data_root D --cands cands_oof.pkl [--workers 2]
         PQ after growing / shrinking every selected mask by r = -2 ... +2 pixels, pooled and per annotator, with the
         PQ-optimal (fractional) radius of every annotator: annotators differ in how thick they draw
+    python -m solarfil.analysis miou   --data_root D --cands cands_oof.pkl [--workers 2]
+        Multiscale IoU (Ahmadzadeh et al., ICIP 2021): contour agreement at cell sizes 1, 2, 4, ..., 512 px, for every
+        annotated filament against its best-overlapping prediction, for matched pairs, and for the union masks of a photograph
     python -m solarfil.analysis geometry --data_root D --cands cands_oof.pkl [--workers 2]
         PQ after one iteration of a 3x3 square / cross kernel that grows (disjoint masks) or shrinks every selected mask:
         the out-of-fold counterpart of the leaderboard geometry probes (a test-set annotator mix that differs from the
@@ -315,6 +318,94 @@ def radius(cands, photos, stems, tau, workers, n_boot=1000):
           f"interval excludes 0 for {sum(1 for o in out if o[4] > 0 or o[5] < 0)}")
 
 
+# ------------------------------------------------------------------------------------------------ multiscale IoU
+MIOU_CELLS = tuple(2 ** n for n in range(10))                       # 1, 2, 4, ..., 512 px (the paper's choice)
+_CROSS = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
+
+
+def contour(m: np.ndarray) -> np.ndarray:
+    """One-pixel inner boundary of a binary mask (the mask minus its erosion)."""
+    m = m.astype(np.uint8)
+    return m & (1 - cv2.erode(m, _CROSS))
+
+
+def multiscale_iou(gt: np.ndarray, pred: np.ndarray, cells=MIOU_CELLS) -> float:
+    """Multiscale IoU of Ahmadzadeh et al. (ICIP 2021) on the contours: at every cell size d the image is cut into a
+    d x d grid and a cell is on if a contour pixel falls into it; r(d) = |cells of both| / |cells of the ground truth|;
+    the score is the area under r over the scales mapped uniformly onto [0, 1] (trapezoids). Both arrays must have
+    sides divisible by max(cells) or be crops aligned to that grid. Ground truth without contour: nan."""
+    cg, cp = contour(gt), contour(pred)
+    h, w = cg.shape
+    r = []
+    for d in cells:
+        g = cg.reshape(h // d, d, w // d, d).max(axis=(1, 3))
+        p = cp.reshape(h // d, d, w // d, d).max(axis=(1, 3))
+        n = int(g.sum())
+        if n == 0:
+            return float("nan")
+        r.append(int((g & p).sum()) / n)
+    r = np.asarray(r)
+    return float((r.sum() - 0.5 * (r[0] + r[-1])) / (len(r) - 1))
+
+
+def _aligned_crop(*masks, step=512):
+    """Bounding box of the union of the masks, extended to the step grid (keeps every cell grid of the metric)."""
+    u = np.zeros_like(masks[0], dtype=bool)
+    for m in masks:
+        u |= m.astype(bool)
+    ys, xs = np.nonzero(u)
+    y0, x0 = (ys.min() // step) * step, (xs.min() // step) * step
+    y1, x1 = -(-(ys.max() + 1) // step) * step, -(-(xs.max() + 1) // step) * step
+    return slice(y0, y1), slice(x0, x1)
+
+
+def _miou_job(stem):
+    rl = _G["sel"][stem]
+    preds = [mask_util.decode(r) for r in rl]
+    union_p = np.zeros(SIZE, np.uint8)
+    for m in preds:
+        union_p |= m
+    out = {"best": [], "matched": [], "semantic": []}
+    for g in _G["gts"][stem].values():
+        if not g:
+            continue
+        iou = iou_matrix(rl, g)
+        union_g = np.zeros(SIZE, np.uint8)
+        for j, gr in enumerate(g):
+            gm = mask_util.decode(gr)
+            union_g |= gm
+            if len(rl) and iou[:, j].max() > 0:
+                i = int(np.argmax(iou[:, j]))
+                sl = _aligned_crop(gm, preds[i])
+                v = multiscale_iou(gm[sl], preds[i][sl])
+                out["best"].append(v)
+                if iou[i, j] > 0.5:
+                    out["matched"].append(v)
+            else:
+                out["best"].append(0.0)
+        out["semantic"].append(multiscale_iou(union_g, union_p))
+    return stem, out
+
+
+def miou(cands, photos, stems, tau, workers):
+    gts = {s: photo_gt_rles(photos[s]) for s in stems}
+    sel = {s: selected(cands, s, tau) for s in stems}
+    acc, t0 = {"best": [], "matched": [], "semantic": []}, time.time()
+    with ProcessPoolExecutor(workers, initializer=_init, initargs=({"gts": gts, "sel": sel},)) as ex:
+        for k, (_, o) in enumerate(ex.map(_miou_job, stems, chunksize=4)):
+            for key in acc:
+                acc[key] += o[key]
+            if k % 100 == 0:
+                print(k, len(stems), f"{time.time() - t0:.0f}s", flush=True)
+    print("\nMultiscale IoU (contours, cells 1 ... 512 px), pooled over annotator copies:")
+    for key, name in (("best", "annotated filament vs. its best-overlapping prediction (0 if none)"),
+                      ("matched", "matched pairs (IoU > 0.5)"), ("semantic", "union masks of a photograph (per copy)")):
+        v = np.asarray(acc[key], float)
+        v = v[~np.isnan(v)]
+        print(f"{name:70s} n {len(v):5d}  mean {v.mean():.4f}  median {np.median(v):.4f}  "
+              f"quartiles {np.quantile(v, 0.25):.3f} / {np.quantile(v, 0.75):.3f}")
+
+
 # ------------------------------------------------------------------------------------------------ geometry
 def geometry_op(masks: list[np.ndarray], op: str) -> list[np.ndarray]:
     """One iteration of a 3x3 kernel on every mask of a photograph: `dil_sq` / `dil_x` grow (a pixel claimed by several
@@ -438,7 +529,7 @@ def main(argv=None):
     p.add_argument("--cands", required=True, help="out-of-fold candidate file (python -m solarfil.cands)")
     p.add_argument("--test_cands", required=True, help="candidate file of the test photographs (python -m solarfil.cands --probs ...)")
     p.add_argument("--tau", type=float, default=0.20)
-    for name in ("numbers", "annotators", "tau", "hand", "radius", "pairs", "extent", "geometry"):
+    for name in ("numbers", "annotators", "tau", "hand", "radius", "pairs", "extent", "geometry", "miou"):
         p = sub.add_parser(name)
         p.add_argument("--data_root", required=True)
         p.add_argument("--cands", required=name != "annotators", default="",
@@ -467,6 +558,8 @@ def main(argv=None):
         radius(cands, photos, stems, args.tau, args.workers)
     elif args.cmd == "extent":
         extent(cands, photos, stems, args.tau)
+    elif args.cmd == "miou":
+        miou(cands, photos, stems, args.tau, args.workers)
     elif args.cmd == "geometry":
         geometry(cands, photos, stems, args.tau, args.workers)
     else:

@@ -2,7 +2,7 @@
 import numpy as np
 from pycocotools import mask as mask_util
 
-from solarfil.analysis import RADII, _primary_scores, extent_failures, fates, geometry_op, iou_matrix, shrink_grow, vertex
+from solarfil.analysis import RADII, _primary_scores, extent_failures, fates, geometry_op, iou_matrix, multiscale_iou, shrink_grow, vertex
 
 
 def _rle(m):
@@ -77,3 +77,13 @@ def test_geometry_ops_square_cross_and_disjointness():
     assert geometry_op([a], "ero_sq")[0].sum() == 8 * 8 and geometry_op([a], "base")[0] is a
     tiny = np.zeros((40, 40), np.uint8); tiny[5, 5] = 1
     assert geometry_op([tiny], "ero_x") == []                                  # vanished masks are dropped
+
+
+def test_multiscale_iou_identity_shift_and_empty():
+    a = np.zeros((512, 512), np.uint8); a[100:140, 50:400] = 1
+    assert abs(multiscale_iou(a, a) - 1.0) < 1e-12
+    b = np.roll(a, 3, axis=0)                                  # 3-px shift: fine scales disagree, coarse ones agree
+    v = multiscale_iou(a, b)
+    assert 0.5 < v < 1.0
+    assert multiscale_iou(a, np.zeros_like(a)) == 0.0
+    assert np.isnan(multiscale_iou(np.zeros_like(a), a))
