@@ -38,6 +38,7 @@ def get_args(argv=None):
     a.add_argument("--wd", type=float, default=1e-4)
     a.add_argument("--samples_per_epoch", type=int, default=0, help="0 -> 3 crops per training photo")
     a.add_argument("--border_weight", type=float, default=0.5)
+    a.add_argument("--cldice_weight", type=float, default=0.0, help="weight of the soft clDice term (thin structures); 0 = off")
     a.add_argument("--val_every", type=int, default=4)
     a.add_argument("--val_tta", type=int, default=2)
     a.add_argument("--workers", type=int, default=4)
@@ -93,7 +94,7 @@ def main(argv=None):
         model.load_state_dict(torch.load(args.init_ckpt, map_location=dev, weights_only=False)["state_dict"])
         print("initialised from", args.init_ckpt, flush=True)
     ema = EMA(model, decay=args.ema)
-    crit = FilamentLoss(border_weight=args.border_weight)
+    crit = FilamentLoss(border_weight=args.border_weight, cldice_weight=args.cldice_weight)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wd)
     steps = args.epochs * len(dl)
     warm = min(300, steps // 10)
@@ -101,7 +102,7 @@ def main(argv=None):
         opt, lambda s: (s + 1) / warm if s < warm else 0.5 * (1 + math.cos(math.pi * (s - warm) / max(1, steps - warm))) * 0.98 + 0.02)
     scaler = torch.amp.GradScaler("cuda", enabled=dev.type == "cuda")
 
-    tag = f"{args.arch}_{args.encoder}_s{args.size}{suffix}_f{args.fold}"
+    tag = f"{args.arch}_{args.encoder}_s{args.size}{suffix}" + (f"_cl{args.cldice_weight:g}" if args.cldice_weight else "") + f"_f{args.fold}"
     ckpt = os.path.join(args.work, f"{tag}.pth")
     best, log = -1.0, []
     cfg = PostCfg()

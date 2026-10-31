@@ -160,9 +160,18 @@ python -m solarfil.infer --data_root $DATA --ckpts weights/Unet_*.pth --rescorer
 python -m solarfil.infer --from_probs work/probs --rescorer configs/rescorer_all.npz --out submission.csv   # CPU: only the post-processing
 ```
 
-GPU arithmetic in half precision is not bit-wise deterministic: re-running may move a few boundary pixels, not the
-filaments. The learned filter is re-fitted from `configs/rescorer_all.npz` in a few seconds on every run (it is
-deterministic).
+**Evaluated submission:** the file produced by this mode (`REPRODUCE_SUBMISSION`, ten networks, 8-fold TTA, learned
+filter tau = 0.20), submitted on Kaggle as "v9 repo-reproducible" (public leaderboard 0.39).
+
+**Hardware:** one GPU with at least 8 GB of memory (peak 6.0 GB measured on a Kaggle T4 / P100); about one hour for the 180
+test photographs. A CPU-only machine with 8 GB of RAM is not enough for the 2048^2 networks.
+
+**Independent re-run:** the notebook was executed unchanged on a fresh Kaggle GPU session (code from this repository,
+checkpoints verified against `configs/weights.json`): 58.6 min, 1179 filaments; 1158 of the 1180 submitted masks are
+reproduced exactly (IoU > 0.999), the other 22 are borderline candidates whose learned-filter decision flips with the
+last bits of the GPU arithmetic. Half-precision GPU arithmetic is not bit-wise deterministic, so a re-run can differ in
+such borderline instances, not in the bulk of the prediction. The learned filter is re-fitted from
+`configs/rescorer_all.npz` in a few seconds on every run (it is deterministic).
 
 ## Refit the learned filter without retraining the networks
 

@@ -33,11 +33,40 @@ def soft_dice_loss(logits, target, eps=1.0):
     return (1 - (2 * inter + eps) / (den + eps)).mean()
 
 
+def soft_skeleton(p: torch.Tensor, iters: int = 10) -> torch.Tensor:
+    """Differentiable morphological skeleton of a soft mask (B,H,W) in [0,1] (Shit et al., clDice, CVPR 2021):
+    repeated soft erosion (min-pooling) and opening, keeping what each opening removes."""
+    def erode(x):
+        return torch.minimum(-F.max_pool2d(-x, (3, 1), 1, (1, 0)), -F.max_pool2d(-x, (1, 3), 1, (0, 1)))
+
+    def dilate(x):
+        return F.max_pool2d(x, 3, 1, 1)
+
+    x = p.unsqueeze(1)
+    skel = F.relu(x - dilate(erode(x)))
+    for _ in range(iters):
+        x = erode(x)
+        delta = F.relu(x - dilate(erode(x)))
+        skel = skel + F.relu(delta - skel * delta)
+    return skel.squeeze(1)
+
+
+def soft_cldice_loss(logits, target, iters: int = 10, eps: float = 1.0):
+    """1 - clDice: harmonic mean of the share of the predicted skeleton inside the target and of the target skeleton
+    inside the prediction. Rewards thin, elongated structures (filament tails, barbs) that area losses barely see."""
+    p = torch.sigmoid(logits)
+    sp, st = soft_skeleton(p, iters), soft_skeleton(target, iters)
+    tprec = ((sp * target).sum(dim=(1, 2)) + eps) / (sp.sum(dim=(1, 2)) + eps)
+    tsens = ((st * p).sum(dim=(1, 2)) + eps) / (st.sum(dim=(1, 2)) + eps)
+    return (1 - 2 * tprec * tsens / (tprec + tsens)).mean()
+
+
 class FilamentLoss(nn.Module):
-    def __init__(self, border_weight=0.5, pos_weight=3.0):
+    def __init__(self, border_weight=0.5, pos_weight=3.0, cldice_weight=0.0):
         super().__init__()
         self.bw = border_weight
         self.pw = pos_weight
+        self.cw = cldice_weight
 
     def forward(self, logits, target):
         fg_l, bd_l = logits[:, 0], logits[:, 1]
@@ -47,6 +76,8 @@ class FilamentLoss(nn.Module):
         if self.bw > 0:
             loss = loss + self.bw * (F.binary_cross_entropy_with_logits(bd_l, bd_t, pos_weight=pw * 3)
                                      + 0.5 * soft_dice_loss(bd_l, bd_t))
+        if self.cw > 0:
+            loss = loss + self.cw * soft_cldice_loss(fg_l, fg_t)
         return loss
 
 
