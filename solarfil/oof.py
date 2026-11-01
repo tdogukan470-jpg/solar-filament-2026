@@ -18,6 +18,7 @@ import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 
+import cv2
 import numpy as np
 import torch
 
@@ -37,6 +38,8 @@ def main(argv=None):
     a.add_argument("--skip_existing", action="store_true")
     a.add_argument("--skip_list", default="", help="text file with photograph stems to skip, one per line")
     a.add_argument("--limit", type=int, default=0, help="only the first N held-out photographs of every checkpoint")
+    a.add_argument("--scale", type=float, default=1.0, help="experiment: feed the network the photograph at scale x its "
+                   "training size (rounded to a multiple of 32) and resize the maps back; maps go to <dir>_x<scale>")
     args = a.parse_args(argv)
 
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -51,7 +54,8 @@ def main(argv=None):
         model = next(iter(load_models([path], dev).values()))
         folds = make_folds(list(photos_all), ca.get("n_folds", 5), ca.get("seed", 42))        # the folds of train.py
         stems = [s for s in folds.loc[folds.fold == ca["fold"], "stem"] if s in photos][:args.limit or None]
-        out_dir = os.path.join(args.out, f"oof_{ca['arch']}_{ca['encoder']}_s{ca['size']}")
+        out_dir = os.path.join(args.out, f"oof_{ca['arch']}_{ca['encoder']}_s{ca['size']}" + (f"_x{args.scale:g}" if args.scale != 1 else ""))
+        in_size = int(round(ca["size"] * args.scale / 32)) * 32
         os.makedirs(out_dir, exist_ok=True)
         todo = [s for s in stems if s not in skip and not (args.skip_existing and os.path.exists(os.path.join(out_dir, s + ".npz")))]
         print(f"{os.path.basename(path)}: fold {ca['fold']}, {len(todo)}/{len(stems)} photographs -> {out_dir}", flush=True)
@@ -61,7 +65,7 @@ def main(argv=None):
         def push():
             s = next(it, None)
             if s is not None:
-                queue.append((s, pool.submit(load_input, os.path.join(img_dir, photos[s].file_name), ca["size"])))
+                queue.append((s, pool.submit(load_input, os.path.join(img_dir, photos[s].file_name), in_size)))
         for _ in range(4):
             push()
         i = 0
@@ -70,6 +74,8 @@ def main(argv=None):
             push()
             x = torch.from_numpy(f.result().transpose(2, 0, 1).astype(np.float32) / 255.0)
             p = predict_full(model, x, tta=args.tta).numpy()
+            if in_size != ca["size"]:
+                p = np.stack([cv2.resize(c, (ca["size"], ca["size"]), interpolation=cv2.INTER_LINEAR) for c in p])
             np.savez_compressed(os.path.join(out_dir, f"{s}.npz"), p=np.round(p * 255).astype(np.uint8))
             if i % 20 == 0:
                 print(f"  {i}/{len(todo)} ({time.time() - t0:.0f}s)", flush=True)
