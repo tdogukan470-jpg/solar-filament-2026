@@ -10,7 +10,7 @@ images and their annotations are used; inference uses only the image itself (sam
 
 Training labels: every annotator copy of a photograph is a separate training sample (same image, that copy's
 polygons), so the detector sees the annotators' disagreement in proportion to the data. Folds are the day-grouped
-folds of solarfil.data.make_folds (seed 42), identical to stage 1, so fold-k predictions are out of fold.
+folds of solarfil.data.make_folds (seed 42), identical to stage 1, so fold-k predictions are out of fold. --fold -1 trains on all 707 photographs (for the test predictions).
 """
 from __future__ import annotations
 
@@ -36,6 +36,16 @@ def _write_png(args):
     return dst
 
 
+def _write_sample(out, split, name, src, stem, polys):
+    img_link = os.path.join(out, split, "images", name + ".png")
+    if not os.path.exists(img_link):
+        os.symlink(os.path.join(src, stem + ".png"), img_link)
+    with open(os.path.join(out, split, "labels", name + ".txt"), "w") as f:
+        for poly in polys:
+            xy = np.clip(np.asarray(poly, np.float64) / NATIVE, 0, 1)
+            f.write("0 " + " ".join(f"{v:.6f}" for v in xy) + "\n")
+
+
 def prep(a):
     tr_json = os.path.join(a.data_root, "train", "MAGFiLO_1.0_Annotations_kaggle2026_train.json")
     img_dir = os.path.join(a.data_root, "train", "train_images")
@@ -59,6 +69,8 @@ def prep(a):
     for s, p in photos.items():
         split = "val" if fold_of[s] == a.fold else "train"
         copies = list(p.annotators.items()) if split == "train" else list(p.annotators.items())[:1]
+        if a.fold < 0 and fold_of[s] == 0:  # all-data model: Ultralytics still needs a val folder for its final
+            _write_sample(a.out, "val", f"{s}__0", src, s, copies[0][1])  # report; those photos are ALSO trained on
         for k, (_aid, polys) in enumerate(copies):
             name = f"{s}__{k}"
             img_link = os.path.join(a.out, split, "images", name + ".png")
