@@ -176,6 +176,13 @@ last bits of the GPU arithmetic. Half-precision GPU arithmetic is not bit-wise d
 such borderline instances, not in the bulk of the prediction. The learned filter is re-fitted from
 `configs/rescorer_all.npz` in a few seconds on every run (it is deterministic).
 
+**Independent re-run of `REFIT_FILTER` (no training):** executed unchanged on a fresh Kaggle T4 session: 2 h 09 min, exit code 0,
+peak GPU memory 5.9 GB. Out-of-fold maps regenerated from the released weights, filter refitted, evaluation and ablation table
+recomputed: out-of-fold PQ 0.4507 [0.4406, 0.4599] against 0.4512 reported (filter CV PQ 0.4489 vs 0.4491; every ablation row
+within 0.001 of the table). The regenerated candidate features have the same distributions; individual values differ in
+the last digits (half-precision GPU arithmetic, see above). Test prediction with the refitted filter: 1177 filaments, 1113
+of the 1180 submitted masks identical.
+
 ## Refit the learned filter without retraining the networks
 
 The learned instance filter is fitted on out-of-fold probability maps. They can be regenerated from the released weights
